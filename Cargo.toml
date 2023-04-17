@@ -1,0 +1,19 @@
+[package]
+name = "nova-study"
+version = "0.0.1"
+edition = "2021"
+authors = ["arnaucube <root@arnaucube.com>"]
+license = "GPL-3.0"
+repository = "https://github.com/arnaucube/nova-study"
+
+[dependencies]
+ark-std = "0.4.0"
+ark-ff = "0.4.0"
+ark-ec = { version = "0.4.0", default-features = false }
+ark-poly = "0.4.0"
+ark-serialize = { version = "0.4.0", default-features = false, features = [ "derive" ] }
+rand = { version = "0.8", features = [ "std", "std_rng" ] }
+merlin = { version = "3.0.0" }
+
+[dev-dependencies]
+ark-bn254 = { version = "0.4.0", default-features = false, features=["curve"] }
