@@ -1,8 +1,12 @@
 use ark_ec::AffineRepr;
-use ark_std::{rand::RngCore, UniformRand};
+use ark_std::{
+    rand::{Rng, RngCore},
+    UniformRand,
+};
 use std::marker::PhantomData;
 
 use crate::transcript::Transcript;
+use crate::utils::naive_msm;
 
 pub struct Proof<C: AffineRepr> {
     R: C,
@@ -20,15 +24,35 @@ pub struct Pedersen<C: AffineRepr> {
 }
 
 impl<C: AffineRepr> Pedersen<C> {
-    pub fn commit<R: RngCore>(
+    pub fn new_params<R: Rng>(rng: &mut R) -> Params<C> {
+        let h_scalar = C::ScalarField::rand(rng);
+        let g: C = C::generator();
+        let params: Params<C> = Params::<C> {
+            g,
+            h: g.mul(h_scalar).into(),
+        };
+        params
+    }
+
+    pub fn commit_elem<R: RngCore>(
         rng: &mut R,
         params: &Params<C>,
         v: &C::ScalarField,
-    ) -> (C, C::ScalarField) {
+    ) -> Commitment<C> {
         let r = C::ScalarField::rand(rng);
         let cm: C = (params.g.mul(v) + params.h.mul(r)).into();
-        (cm, r)
+        Commitment::<C> { cm, r }
     }
+    pub fn commit_vec<R: RngCore>(
+        rng: &mut R,
+        params: &Params<C>,
+        v: &Vec<C::ScalarField>,
+    ) -> CommitmentVec<C> {
+        let r: Vec<C> = vec![C::rand(rng); v.len()]; // wip
+        let cm = naive_msm(v, &r);
+        CommitmentVec::<C> { cm, r }
+    }
+
     pub fn prove(
         params: &Params<C>,
         transcript: &mut Transcript<C::ScalarField>,
@@ -73,13 +97,18 @@ impl<C: AffineRepr> Pedersen<C> {
     }
 }
 
+pub struct CommitmentVec<C: AffineRepr> {
+    // WIP
+    pub cm: C,
+    pub r: Vec<C>,
+}
 pub struct Commitment<C: AffineRepr> {
     pub cm: C,
     pub r: C::ScalarField,
 }
 impl<C: AffineRepr> Commitment<C> {
     pub fn prove(
-        self,
+        &self,
         params: &Params<C>,
         transcript: &mut Transcript<C::ScalarField>,
         v: C::ScalarField,
@@ -100,12 +129,7 @@ mod tests {
         let mut rng = ark_std::test_rng();
 
         // setup params
-        let h_scalar = Fr::rand(&mut rng);
-        let g: G1Affine = G1Affine::generator();
-        let params: Params<G1Affine> = Params::<G1Affine> {
-            g,
-            h: g.mul(h_scalar).into_affine(),
-        };
+        let params = Pedersen::<G1Affine>::new_params(&mut rng);
 
         // init Prover's transcript
         let mut transcript_p: Transcript<Fr> = Transcript::<Fr>::new();
@@ -114,9 +138,11 @@ mod tests {
 
         let v = Fr::rand(&mut rng);
 
-        let (cm, r) = Pedersen::commit(&mut rng, &params, &v);
-        let proof = Pedersen::prove(&params, &mut transcript_p, cm, v, r);
-        let v = Pedersen::verify(&params, &mut transcript_v, cm, proof);
+        let cm = Pedersen::commit_elem(&mut rng, &params, &v);
+        let proof = cm.prove(&params, &mut transcript_p, v);
+        // also can use:
+        // let proof = Pedersen::prove(&params, &mut transcript_p, cm.cm, v, cm.r);
+        let v = Pedersen::verify(&params, &mut transcript_v, cm.cm, proof);
         assert!(v);
     }
 }

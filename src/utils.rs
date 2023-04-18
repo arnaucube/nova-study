@@ -1,3 +1,4 @@
+use ark_ec::AffineRepr;
 use ark_ff::fields::PrimeField;
 use core::ops::Add;
 
@@ -29,6 +30,16 @@ pub fn hadamard_product<F: PrimeField>(a: Vec<F>, b: Vec<F>) -> Vec<F> {
     r
 }
 
+pub fn naive_msm<C: AffineRepr>(s: &Vec<C::ScalarField>, p: &Vec<C>) -> C {
+    // check lengths
+
+    let mut r = p[0].mul(s[0]);
+    for i in 1..s.len() {
+        r = p[i].mul(s[i]);
+    }
+    r.into()
+}
+
 pub fn vec_add<F: PrimeField>(a: Vec<F>, b: Vec<F>) -> Vec<F> {
     let mut r: Vec<F> = vec![F::zero(); a.len()];
     for i in 0..a.len() {
@@ -55,6 +66,24 @@ pub fn vec_sub<F: PrimeField>(a: Vec<F>, b: Vec<F>) -> Vec<F> {
     r
 }
 
+pub fn to_F_matrix<F: PrimeField>(M: Vec<Vec<usize>>) -> Vec<Vec<F>> {
+    let mut R: Vec<Vec<F>> = vec![Vec::new(); M.len()];
+    for i in 0..M.len() {
+        R[i] = vec![F::zero(); M[i].len()];
+        for j in 0..M[i].len() {
+            R[i][j] = F::from(M[i][j] as u64);
+        }
+    }
+    R
+}
+pub fn to_F_vec<F: PrimeField>(z: Vec<usize>) -> Vec<F> {
+    let mut r: Vec<F> = vec![F::zero(); z.len()];
+    for i in 0..z.len() {
+        r[i] = F::from(z[i] as u64);
+    }
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,24 +91,6 @@ mod tests {
     use ark_ec::CurveGroup;
     use ark_std::{One, Zero};
     use std::ops::Mul;
-
-    fn to_F_matrix<F: PrimeField>(M: Vec<Vec<usize>>) -> Vec<Vec<F>> {
-        let mut R: Vec<Vec<F>> = vec![Vec::new(); M.len()];
-        for i in 0..M.len() {
-            R[i] = vec![F::zero(); M[i].len()];
-            for j in 0..M[i].len() {
-                R[i][j] = F::from(M[i][j] as u64);
-            }
-        }
-        R
-    }
-    fn to_F_vec<F: PrimeField>(z: Vec<usize>) -> Vec<F> {
-        let mut r: Vec<F> = vec![F::zero(); z.len()];
-        for i in 0..z.len() {
-            r[i] = F::from(z[i] as u64);
-        }
-        r
-    }
 
     #[test]
     fn test_matrix_vector_product() {
