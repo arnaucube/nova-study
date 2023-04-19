@@ -1,6 +1,7 @@
 use ark_ec::AffineRepr;
 use ark_ff::fields::PrimeField;
-use core::ops::Add;
+use core::ops::{Add, Sub};
+use std::fmt;
 
 pub fn vector_elem_product<F: PrimeField>(a: &Vec<F>, e: &F) -> Vec<F> {
     // maybe move this method to operator a * e
@@ -30,6 +31,11 @@ pub fn hadamard_product<F: PrimeField>(a: Vec<F>, b: Vec<F>) -> Vec<F> {
     r
 }
 
+// rlin: random linear combination
+// pub fn rlin<F: PrimeField>(a: Vec<F>, b: Vec<F>, r: F) -> Vec<F> {
+//     vec_add(a, vector_elem_product(&b, &r)) // WIP probably group loops
+// }
+
 pub fn naive_msm<C: AffineRepr>(s: &Vec<C::ScalarField>, p: &Vec<C>) -> C {
     // check lengths
 
@@ -47,23 +53,54 @@ pub fn vec_add<F: PrimeField>(a: Vec<F>, b: Vec<F>) -> Vec<F> {
     }
     r
 }
-// TODO instead of vec_add do:
-// impl<'a, 'b, F> Add<&'b Vec<F>> for &'a Vec<F> {
-//     type Output = Vec<F>;
-//     fn add(self, rhs: &'b Vec<F>) -> Vec<F> {
-//         let mut r: Vec<F> = vec![F::zero(); self.len()];
-//         for i in 0..self.len() {
-//             r[i] = self[i] + rhs[i];
-//         }
-//         r
-//     }
-// }
 pub fn vec_sub<F: PrimeField>(a: Vec<F>, b: Vec<F>) -> Vec<F> {
     let mut r: Vec<F> = vec![F::zero(); a.len()];
     for i in 0..a.len() {
         r[i] = a[i] - b[i];
     }
     r
+}
+
+// instead of vec_{add/sub} can use Ve wrapper which has '+', '-' operators
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ve<F: PrimeField>(pub Vec<F>);
+
+impl<F: PrimeField> fmt::Display for Ve<F> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for (i, e) in self.0.iter().enumerate() {
+            if i == self.0.len() - 1 {
+                write!(f, "{}", e)?;
+                break;
+            }
+            write!(f, "{}, ", e)?;
+        }
+        Ok(())
+    }
+}
+
+impl<F: PrimeField> Add<Ve<F>> for Ve<F> {
+    type Output = Ve<F>;
+    fn add(self, rhs_vec: Self) -> Ve<F> {
+        let lhs = self.0.clone();
+        let rhs = rhs_vec.0.clone();
+        let mut r: Vec<F> = vec![F::zero(); lhs.len()];
+        for i in 0..self.0.len() {
+            r[i] = lhs[i] + rhs[i];
+        }
+        Ve(r)
+    }
+}
+impl<F: PrimeField> Sub<Ve<F>> for Ve<F> {
+    type Output = Ve<F>;
+    fn sub(self, rhs_vec: Self) -> Ve<F> {
+        let lhs = self.0.clone();
+        let rhs = rhs_vec.0.clone();
+        let mut r: Vec<F> = vec![F::zero(); lhs.len()];
+        for i in 0..self.0.len() {
+            r[i] = lhs[i] - rhs[i];
+        }
+        Ve(r)
+    }
 }
 
 pub fn to_F_matrix<F: PrimeField>(M: Vec<Vec<usize>>) -> Vec<Vec<F>> {
@@ -113,6 +150,12 @@ mod tests {
             hadamard_product(a, b),
             to_F_vec(vec![7, 16, 27, 40, 55, 72])
         );
+    }
+    #[test]
+    fn test_vec_add() {
+        let a: Vec<Fr> = to_F_vec::<Fr>(vec![1, 2, 3, 4, 5, 6]);
+        let b: Vec<Fr> = to_F_vec(vec![7, 8, 9, 10, 11, 12]);
+        assert_eq!(vec_add(a.clone(), b.clone()), (Ve(a) + Ve(b)).0);
     }
 
     #[test]
