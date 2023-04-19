@@ -3,7 +3,7 @@ use ark_std::ops::Add;
 use ark_std::One;
 use std::marker::PhantomData;
 
-use crate::pedersen::{Commitment, CommitmentVec, Params as PedersenParams, Pedersen};
+use crate::pedersen::{Commitment, Params as PedersenParams, Pedersen};
 use crate::r1cs::*;
 use crate::transcript::Transcript;
 use crate::utils::*;
@@ -14,37 +14,28 @@ use ark_std::{
 
 // Phi: φ in the paper (later 𝖴), a folded instance
 pub struct Phi<C: AffineRepr> {
-    // cmE: CommitmentVec<C>, // TODO not Commitment but directly C (without rE)
-    cmE: C,
+    cmE: Commitment<C>,
     u: C::ScalarField,
-    // cmW: CommitmentVec<C>, // TODO not Commitment but directly C (without rW)
-    cmW: C,
+    cmW: Commitment<C>,
     x: Vec<C::ScalarField>,
 }
 
 // FWit: Folded Witness
 pub struct FWit<C: AffineRepr> {
     E: Vec<C::ScalarField>,
-    rE: C::ScalarField,
     W: Vec<C::ScalarField>,
-    rW: C::ScalarField,
 }
 
 impl<C: AffineRepr> FWit<C> {
-    pub fn commit<R: Rng>(
-        &self,
-        rng: &mut R,
-        params: &PedersenParams<C>,
-        x: Vec<C::ScalarField>,
-    ) -> Phi<C> {
-        // TODO instead of rand r, use self.rE and self.rW for the commit_vec
-        let cmE = Pedersen::commit_vec(rng, &params, &self.E);
-        let cmW = Pedersen::commit_vec(rng, &params, &self.W);
+    pub fn commit(self, params: &PedersenParams<C>, x: &Vec<C::ScalarField>) -> Phi<C> {
+        // TODO instead of r_vec, use self.rE and self.rW for the commit
+        let cmE = Pedersen::commit(&params.r_vec, &self.E);
+        let cmW = Pedersen::commit(&params.r_vec, &self.W);
         Phi {
-            cmE: cmE.cm,
+            cmE,
             u: C::ScalarField::one(),
-            cmW: cmW.cm,
-            x,
+            cmW,
+            x: x.clone(),
         }
     }
 }
@@ -91,19 +82,15 @@ impl<C: AffineRepr> NIFS<C> {
         let E: Vec<C::ScalarField> = vec_add(
             // this syntax will be simplified with future operators impl (or at least a method
             // for r-lin)
-            vec_add(fw1.E.clone(), vector_elem_product(&T, &r)),
+            &vec_add(&fw1.E, &vector_elem_product(&T, &r)),
             // rlin(fw1.E.clone(), T, r),
-            vector_elem_product(&fw2.E, &r2),
+            &vector_elem_product(&fw2.E, &r2),
         );
-        let rE = fw1.rE + r2 * fw2.rE; // TODO rT
-        let W = vec_add(fw1.W.clone(), vector_elem_product(&fw2.W, &r));
+        let W = vec_add(&fw1.W, &vector_elem_product(&fw2.W, &r));
         // let W = rlin(fw1.W.clone(), fw2.W.clone(), r);
-        let rW = fw1.rW + r * fw2.rW;
         FWit::<C> {
             E: E.into(),
-            rE,
             W: W.into(),
-            rW,
         }
     }
 
@@ -111,28 +98,20 @@ impl<C: AffineRepr> NIFS<C> {
         r: C::ScalarField,
         phi1: Phi<C>,
         phi2: Phi<C>,
-        cmT: CommitmentVec<C>,
+        cmT: Commitment<C>,
     ) -> Phi<C> {
         let r2 = r * r;
 
-        let cmE = phi1.cmE + cmT.cm.mul(r) + phi2.cmE.mul(r2);
+        let cmE = phi1.cmE.0 + cmT.0.mul(r) + phi2.cmE.0.mul(r2);
         let u = phi1.u + r * phi2.u;
-        let cmW = phi1.cmW + phi2.cmW.mul(r);
-        let x = vec_add(phi1.x, vector_elem_product(&phi2.x, &r));
+        let cmW = phi1.cmW.0 + phi2.cmW.0.mul(r);
+        let x = vec_add(&phi1.x, &vector_elem_product(&phi2.x, &r));
         // let x = rlin(phi1.x, phi2.x, r);
 
         Phi::<C> {
-            // cmE: Commitment::<C> {
-            //     cm: cmE.into(),
-            //     r: phi1.cmE.r,
-            // },
-            cmE: cmE.into(),
+            cmE: Commitment(cmE.into()),
             u,
-            // cmW: Commitment::<C> {
-            //     cm: cmW.into(),
-            //     r: phi1.cmW.r,
-            // },
-            cmW: cmW.into(),
+            cmW: Commitment(cmW.into()),
             x,
         }
     }
@@ -194,44 +173,44 @@ mod tests {
         .relax();
 
         let T = NIFS::<G1Affine>::comp_T(relaxed_r1cs_1, relaxed_r1cs_2, &z1, &z2);
-        let params = Pedersen::<G1Affine>::new_params(&mut rng);
-        let cmT = Pedersen::commit_vec(&mut rng, &params, &T);
+        let pedersen_params = Pedersen::<G1Affine>::new_params(&mut rng, 100); // 100 is wip, will get it from actual vec
+        let cmT = Pedersen::commit(&pedersen_params.r_vec, &T);
 
         let r = Fr::rand(&mut rng); // this would come from the transcript
 
         // WIP TMP
         let fw1 = FWit::<G1Affine> {
             E: vec![Fr::zero(); T.len()],
-            rE: Fr::zero(),
             W: z1,
-            rW: Fr::zero(),
         };
         let fw2 = FWit::<G1Affine> {
             E: vec![Fr::zero(); T.len()],
-            rE: Fr::zero(),
             W: z2,
-            rW: Fr::zero(),
         };
 
         // fold witness
-        let folded_witness = NIFS::<G1Affine>::fold_witness(r, &fw1, &fw2, T);
+        let fw3 = NIFS::<G1Affine>::fold_witness(r, &fw1, &fw2, T);
 
-        let pedersen_params = Pedersen::<G1Affine>::new_params(&mut rng);
-        let phi1 = fw1.commit(&mut rng, &pedersen_params, x1); // wip
-        let phi2 = fw2.commit(&mut rng, &pedersen_params, x2);
+        // let pedersen_params = Pedersen::<G1Affine>::new_params(&mut rng, 100); // 100 is wip, will get it from actual vec
+        let phi1 = fw1.commit(&pedersen_params, &x1); // wip
+        let phi2 = fw2.commit(&pedersen_params, &x2);
         // fold instance
-        let folded_instance = NIFS::<G1Affine>::fold_instance(r, phi1, phi2, cmT);
+        let phi3 = NIFS::<G1Affine>::fold_instance(r, phi1, phi2, cmT);
 
         // naive check that the folded witness satisfies the relaxed r1cs
-        let Az = matrix_vector_product(&A, &folded_witness.W);
-        let Bz = matrix_vector_product(&B, &folded_witness.W);
-        let Cz = matrix_vector_product(&C, &folded_witness.W);
+        let Az = matrix_vector_product(&A, &fw3.W);
+        let Bz = matrix_vector_product(&B, &fw3.W);
+        let Cz = matrix_vector_product(&C, &fw3.W);
         assert_eq!(
             hadamard_product(Az, Bz),
-            vec_add(
-                vector_elem_product(&Cz, &folded_instance.u),
-                folded_witness.E
-            )
+            vec_add(&vector_elem_product(&Cz, &phi3.u), &fw3.E)
         );
+
+        // check that folded commitments from folded instance (phi) are equal to folding the
+        // witnesses and committing into it
+        let x3 = vec_add(&x1, &vector_elem_product(&x2, &r));
+        let phi3_expected = fw3.commit(&pedersen_params, &x3);
+        assert_eq!(phi3_expected.cmE.0, phi3.cmE.0);
+        assert_eq!(phi3_expected.cmW.0, phi3.cmW.0);
     }
 }

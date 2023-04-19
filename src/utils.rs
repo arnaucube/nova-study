@@ -37,7 +37,7 @@ pub fn hadamard_product<F: PrimeField>(a: Vec<F>, b: Vec<F>) -> Vec<F> {
 // }
 
 pub fn naive_msm<C: AffineRepr>(s: &Vec<C::ScalarField>, p: &Vec<C>) -> C {
-    // check lengths
+    // TODO check lengths, or at least check s.len()>= p.len()
 
     let mut r = p[0].mul(s[0]);
     for i in 1..s.len() {
@@ -46,7 +46,7 @@ pub fn naive_msm<C: AffineRepr>(s: &Vec<C::ScalarField>, p: &Vec<C>) -> C {
     r.into()
 }
 
-pub fn vec_add<F: PrimeField>(a: Vec<F>, b: Vec<F>) -> Vec<F> {
+pub fn vec_add<F: PrimeField>(a: &Vec<F>, b: &Vec<F>) -> Vec<F> {
     let mut r: Vec<F> = vec![F::zero(); a.len()];
     for i in 0..a.len() {
         r[i] = a[i] + b[i];
@@ -155,7 +155,7 @@ mod tests {
     fn test_vec_add() {
         let a: Vec<Fr> = to_F_vec::<Fr>(vec![1, 2, 3, 4, 5, 6]);
         let b: Vec<Fr> = to_F_vec(vec![7, 8, 9, 10, 11, 12]);
-        assert_eq!(vec_add(a.clone(), b.clone()), (Ve(a) + Ve(b)).0);
+        assert_eq!(vec_add(&a, &b), (Ve(a) + Ve(b)).0);
     }
 
     #[test]

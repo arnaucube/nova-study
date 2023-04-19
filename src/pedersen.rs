@@ -17,6 +17,7 @@ pub struct Proof<C: AffineRepr> {
 pub struct Params<C: AffineRepr> {
     g: C,
     h: C,
+    pub r_vec: Vec<C>,
 }
 
 pub struct Pedersen<C: AffineRepr> {
@@ -24,12 +25,14 @@ pub struct Pedersen<C: AffineRepr> {
 }
 
 impl<C: AffineRepr> Pedersen<C> {
-    pub fn new_params<R: Rng>(rng: &mut R) -> Params<C> {
+    pub fn new_params<R: Rng>(rng: &mut R, max: usize) -> Params<C> {
         let h_scalar = C::ScalarField::rand(rng);
         let g: C = C::generator();
+        let r_vec: Vec<C> = vec![C::rand(rng); max];
         let params: Params<C> = Params::<C> {
             g,
             h: g.mul(h_scalar).into(),
+            r_vec, // will need 2 r: rE, rW
         };
         params
     }
@@ -38,22 +41,17 @@ impl<C: AffineRepr> Pedersen<C> {
         rng: &mut R,
         params: &Params<C>,
         v: &C::ScalarField,
-    ) -> Commitment<C> {
+    ) -> CommitmentElem<C> {
         let r = C::ScalarField::rand(rng);
         let cm: C = (params.g.mul(v) + params.h.mul(r)).into();
-        Commitment::<C> { cm, r }
+        CommitmentElem::<C> { cm, r }
     }
-    pub fn commit_vec<R: RngCore>(
-        rng: &mut R,
-        params: &Params<C>,
-        v: &Vec<C::ScalarField>,
-    ) -> CommitmentVec<C> {
-        let r: Vec<C> = vec![C::rand(rng); v.len()]; // wip
-        let cm = naive_msm(v, &r);
-        CommitmentVec::<C> { cm, r }
+    pub fn commit(rs: &Vec<C>, v: &Vec<C::ScalarField>) -> Commitment<C> {
+        let cm = naive_msm(v, &rs);
+        Commitment::<C>(cm)
     }
 
-    pub fn prove(
+    pub fn prove_elem(
         params: &Params<C>,
         transcript: &mut Transcript<C::ScalarField>,
         cm: C,
@@ -75,7 +73,7 @@ impl<C: AffineRepr> Pedersen<C> {
         Proof::<C> { R, t1, t2 }
     }
 
-    pub fn verify(
+    pub fn verify_elem(
         params: &Params<C>,
         transcript: &mut Transcript<C::ScalarField>,
         cm: C,
@@ -97,23 +95,20 @@ impl<C: AffineRepr> Pedersen<C> {
     }
 }
 
-pub struct CommitmentVec<C: AffineRepr> {
-    // WIP
-    pub cm: C,
-    pub r: Vec<C>,
-}
-pub struct Commitment<C: AffineRepr> {
+pub struct Commitment<C: AffineRepr>(pub C);
+
+pub struct CommitmentElem<C: AffineRepr> {
     pub cm: C,
     pub r: C::ScalarField,
 }
-impl<C: AffineRepr> Commitment<C> {
+impl<C: AffineRepr> CommitmentElem<C> {
     pub fn prove(
         &self,
         params: &Params<C>,
         transcript: &mut Transcript<C::ScalarField>,
         v: C::ScalarField,
     ) -> Proof<C> {
-        Pedersen::<C>::prove(params, transcript, self.cm, v, self.r)
+        Pedersen::<C>::prove_elem(params, transcript, self.cm, v, self.r)
     }
 }
 
@@ -129,7 +124,9 @@ mod tests {
         let mut rng = ark_std::test_rng();
 
         // setup params
-        let params = Pedersen::<G1Affine>::new_params(&mut rng);
+        let params = Pedersen::<G1Affine>::new_params(
+            &mut rng, 0, /* 0, as here we don't use commit_vec */
+        );
 
         // init Prover's transcript
         let mut transcript_p: Transcript<Fr> = Transcript::<Fr>::new();
@@ -141,8 +138,8 @@ mod tests {
         let cm = Pedersen::commit_elem(&mut rng, &params, &v);
         let proof = cm.prove(&params, &mut transcript_p, v);
         // also can use:
-        // let proof = Pedersen::prove(&params, &mut transcript_p, cm.cm, v, cm.r);
-        let v = Pedersen::verify(&params, &mut transcript_v, cm.cm, proof);
+        // let proof = Pedersen::prove_elem(&params, &mut transcript_p, cm.cm, v, cm.r);
+        let v = Pedersen::verify_elem(&params, &mut transcript_v, cm.cm, proof);
         assert!(v);
     }
 }
