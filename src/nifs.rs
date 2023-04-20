@@ -13,9 +13,9 @@ use ark_std::{
 
 // Phi: φ in the paper (later 𝖴), a folded instance
 pub struct Phi<C: AffineRepr> {
-    cmE: Commitment<C>, // TODO do not contain Commitment, only Commitment.cm (without the randomness)
+    cmE: Commitment<C>,
     u: C::ScalarField,
-    cmW: Commitment<C>, // TODO same as in cmE
+    cmW: Commitment<C>,
     x: Vec<C::ScalarField>,
 }
 
@@ -28,14 +28,22 @@ pub struct FWit<C: AffineRepr> {
 }
 
 impl<C: AffineRepr> FWit<C> {
-    pub fn commit(&self, params: &PedersenParams<C>, x: &Vec<C::ScalarField>) -> Phi<C> {
+    pub fn new(z: Vec<C::ScalarField>, e_len: usize) -> Self {
+        FWit::<C> {
+            E: vec![C::ScalarField::zero(); e_len],
+            rE: C::ScalarField::one(),
+            W: z,
+            rW: C::ScalarField::one(),
+        }
+    }
+    pub fn commit(&self, params: &PedersenParams<C>) -> Phi<C> {
         let cmE = Pedersen::commit(&params, &self.E, &self.rE);
         let cmW = Pedersen::commit(&params, &self.W, &self.rW);
         Phi {
             cmE,
             u: C::ScalarField::one(),
             cmW,
-            x: x.clone(),
+            x: self.W.clone(),
         }
     }
 }
@@ -46,13 +54,13 @@ pub struct NIFS<C: AffineRepr> {
 
 impl<C: AffineRepr> NIFS<C> {
     pub fn comp_T(
-        cs1: RelaxedR1CS<C::ScalarField>,
-        cs2: RelaxedR1CS<C::ScalarField>,
+        cs1: &RelaxedR1CS<C::ScalarField>,
+        cs2: &RelaxedR1CS<C::ScalarField>,
         z1: &Vec<C::ScalarField>,
         z2: &Vec<C::ScalarField>,
     ) -> Vec<C::ScalarField> {
         // assuming cs1.R1CS == cs2.R1CS
-        let (A, B, C) = (cs1.ABC.A, cs1.ABC.B, cs1.ABC.C);
+        let (A, B, C) = (cs1.ABC.A.clone(), cs1.ABC.B.clone(), cs1.ABC.C.clone());
 
         // this is parallelizable (for the future)
         let Az1 = matrix_vector_product(&A, &z1);
@@ -79,6 +87,7 @@ impl<C: AffineRepr> NIFS<C> {
         T: Vec<C::ScalarField>,
         rT: C::ScalarField,
     ) -> FWit<C> {
+        // TODO compute T inside this method, and output cmT to be later inputed into fold_instance
         let r2 = r * r;
         let E: Vec<C::ScalarField> = vec_add(
             // this syntax will be simplified with future operators impl (or at least a method
@@ -133,10 +142,18 @@ mod tests {
     use ark_std::{One, Zero};
     use std::ops::Mul;
 
-    #[test]
-    fn test_simple_folding() {
-        let mut rng = ark_std::test_rng();
-
+    fn gen_test_values<R: Rng>(
+        rng: &mut R,
+    ) -> (
+        RelaxedR1CS<Fr>,
+        RelaxedR1CS<Fr>,
+        Vec<Fr>,
+        Vec<Fr>,
+        Vec<Fr>,
+        Vec<Fr>,
+        Vec<Fr>,
+        Vec<Fr>,
+    ) {
         // R1CS for: x^3 + x + 5 = y (example from article
         // https://www.vitalik.ca/general/2016/12/10/qap.html )
         let A = to_F_matrix::<Fr>(vec![
@@ -157,10 +174,16 @@ mod tests {
             vec![0, 0, 0, 0, 0, 1],
             vec![0, 0, 1, 0, 0, 0],
         ]);
+        // TODO in the future update this method to generate witness, and generate n witnesses
+        // instances
         let z1 = to_F_vec::<Fr>(vec![1, 3, 35, 9, 27, 30]);
         let x1 = to_F_vec::<Fr>(vec![35]);
         let z2 = to_F_vec::<Fr>(vec![1, 4, 73, 16, 64, 68]);
         let x2 = to_F_vec::<Fr>(vec![73]);
+        // let z3 = to_F_vec::<Fr>(vec![1, 4, 73, 16, 64, 68]);
+        // let x3 = to_F_vec::<Fr>(vec![73]);
+        let z3 = to_F_vec::<Fr>(vec![1, 5, 135, 25, 125, 130]);
+        let x3 = to_F_vec::<Fr>(vec![135]);
 
         let relaxed_r1cs_1 = R1CS::<Fr> {
             A: A.clone(),
@@ -174,34 +197,36 @@ mod tests {
             C: C.clone(),
         }
         .relax();
+        (relaxed_r1cs_1, relaxed_r1cs_2, z1, z2, z3, x1, x2, x3)
+    }
 
-        let T = NIFS::<G1Affine>::comp_T(relaxed_r1cs_1, relaxed_r1cs_2, &z1, &z2);
+    // fold 2 instances into one
+    #[test]
+    fn test_one_fold() {
+        let mut rng = ark_std::test_rng();
+        let (relaxed_r1cs_1, relaxed_r1cs_2, z1, z2, _, x1, x2, _) = gen_test_values(&mut rng);
+        let (A, B, C) = (
+            relaxed_r1cs_1.ABC.A.clone(),
+            relaxed_r1cs_1.ABC.B.clone(),
+            relaxed_r1cs_1.ABC.C.clone(),
+        );
+
+        let T = NIFS::<G1Affine>::comp_T(&relaxed_r1cs_1, &relaxed_r1cs_2, &z1, &z2);
         let pedersen_params = Pedersen::<G1Affine>::new_params(&mut rng, 100); // 100 is wip, will get it from actual vec
         let rT: Fr = Fr::rand(&mut rng);
         let cmT = Pedersen::commit(&pedersen_params, &T, &rT);
 
         let r = Fr::rand(&mut rng); // this would come from the transcript
 
-        // WIP TMP
-        let fw1 = FWit::<G1Affine> {
-            E: vec![Fr::zero(); T.len()],
-            rE: Fr::one(),
-            W: z1,
-            rW: Fr::one(),
-        };
-        let fw2 = FWit::<G1Affine> {
-            E: vec![Fr::zero(); T.len()],
-            rE: Fr::one(),
-            W: z2,
-            rW: Fr::one(),
-        };
+        let fw1 = FWit::<G1Affine>::new(z1, A.len());
+        let fw2 = FWit::<G1Affine>::new(z2, A.len());
 
         // fold witness
         let fw3 = NIFS::<G1Affine>::fold_witness(r, &fw1, &fw2, T, rT);
 
         // get committed instances
-        let phi1 = fw1.commit(&pedersen_params, &x1); // wip
-        let phi2 = fw2.commit(&pedersen_params, &x2);
+        let phi1 = fw1.commit(&pedersen_params); // wip
+        let phi2 = fw2.commit(&pedersen_params);
 
         // fold instance
         let phi3 = NIFS::<G1Affine>::fold_instance(r, phi1, phi2, cmT);
@@ -216,10 +241,8 @@ mod tests {
         );
 
         // check that folded commitments from folded instance (phi) are equal to folding the
-        // witnesses and committing into it
-        let x3 = vec_add(&x1, &vector_elem_product(&x2, &r));
         // use folded rE, rW to commit fw3
-        let phi3_expected = fw3.commit(&pedersen_params, &x3);
+        let phi3_expected = fw3.commit(&pedersen_params);
         assert_eq!(phi3_expected.cmE.0, phi3.cmE.0);
         assert_eq!(phi3_expected.cmW.0, phi3.cmW.0);
 
@@ -255,6 +278,118 @@ mod tests {
             &mut transcript_v,
             phi3.cmW,
             phi3_cmW_proof,
+        );
+    }
+
+    // fold i_1, i_2 instances into i_12, and then i_12, i_3 into i_123
+    #[test]
+    fn test_two_fold() {
+        let mut rng = ark_std::test_rng();
+        let pedersen_params = Pedersen::<G1Affine>::new_params(&mut rng, 6);
+
+        let (relaxed_r1cs_1, relaxed_r1cs_2, z1, z2, z3, x1, x2, x3) = gen_test_values(&mut rng);
+
+        let T_12 = NIFS::<G1Affine>::comp_T(&relaxed_r1cs_1, &relaxed_r1cs_2, &z1, &z2);
+        let rT_12: Fr = Fr::rand(&mut rng);
+        let cmT_12 = Pedersen::commit(&pedersen_params, &T_12, &rT_12);
+
+        // let r = Fr::rand(&mut rng); // this would come from the transcript
+        let r = Fr::from(3_u32);
+
+        let fw1 = FWit::<G1Affine>::new(z1, T_12.len());
+        let fw2 = FWit::<G1Affine>::new(z2, T_12.len());
+
+        // fold witness
+        let fw_12 = NIFS::<G1Affine>::fold_witness(r, &fw1, &fw2, T_12, rT_12);
+
+        // get committed instances
+        let phi1 = fw1.commit(&pedersen_params); // wip
+        let phi2 = fw2.commit(&pedersen_params);
+
+        // fold instance
+        let phi_12 = NIFS::<G1Affine>::fold_instance(r, phi1, phi2, cmT_12);
+
+        // 2nd fold
+        // tmp: set relaxed_r1cs instances
+        let relaxed_r1cs_12 = RelaxedR1CS::<Fr> {
+            ABC: relaxed_r1cs_1.ABC,
+            u: phi_12.u,
+            E: Fr::zero(), // not used in comp_T. TODO update RelaxedR1CS & comp_T to work different
+        };
+        let relaxed_r1cs_3 = RelaxedR1CS::<Fr> {
+            ABC: relaxed_r1cs_2.ABC,
+            u: Fr::one(), // as this is a non-yet-folded instance
+            E: Fr::zero(),
+        };
+        let fw3 = FWit::<G1Affine>::new(z3, relaxed_r1cs_3.ABC.A.len());
+
+        // compute cross terms
+        let T_123 = NIFS::<G1Affine>::comp_T(&relaxed_r1cs_12, &relaxed_r1cs_3, &fw_12.W, &fw3.W);
+        // let rT_123: Fr = Fr::rand(&mut rng);
+        let rT_123: Fr = rT_12.clone(); // TMP TODO
+        let cmT_123 = Pedersen::commit(&pedersen_params, &T_123, &rT_123);
+
+        // V sets rand challenge r
+        // let r = Fr::rand(&mut rng); // this would come from the transcript
+
+        // fold witness
+        let fw_123 = NIFS::<G1Affine>::fold_witness(r, &fw_12, &fw3, T_123, rT_123);
+
+        // get committed instances
+        // phi_12 is already known for Verifier from folding phi1, phi2
+        // rm: let phi_12 = fw_12.commit(&pedersen_params); // wip
+        let phi3 = fw3.commit(&pedersen_params);
+
+        // fold instance
+        let phi_123 = NIFS::<G1Affine>::fold_instance(r, phi_12, phi3, cmT_123);
+
+        // naive check that the folded witness satisfies the relaxed r1cs
+        let Az = matrix_vector_product(&relaxed_r1cs_3.ABC.A, &fw_123.W);
+        let Bz = matrix_vector_product(&relaxed_r1cs_3.ABC.B, &fw_123.W);
+        let Cz = matrix_vector_product(&relaxed_r1cs_3.ABC.C, &fw_123.W);
+        assert_eq!(
+            hadamard_product(Az, Bz),
+            vec_add(&vector_elem_product(&Cz, &phi_123.u), &fw_123.E)
+        );
+
+        // check that folded commitments from folded instance (phi) are equal to folding the
+        // use folded rE, rW to commit fw3
+        let phi_123_expected = fw_123.commit(&pedersen_params);
+        assert_eq!(phi_123_expected.cmE.0, phi_123.cmE.0);
+        assert_eq!(phi_123_expected.cmW.0, phi_123.cmW.0);
+
+        // init Prover's transcript
+        let mut transcript_p: Transcript<Fr> = Transcript::<Fr>::new();
+        // init Verifier's transcript
+        let mut transcript_v: Transcript<Fr> = Transcript::<Fr>::new();
+
+        // check openings of phi_123.cmE and phi_123.cmW
+        let phi_123_cmE_proof = Pedersen::prove(
+            &pedersen_params,
+            &mut transcript_p,
+            &phi_123.cmE,
+            fw_123.E,
+            fw_123.rE,
+        );
+        let v = Pedersen::verify(
+            &pedersen_params,
+            &mut transcript_v,
+            phi_123.cmE,
+            phi_123_cmE_proof,
+        );
+
+        let phi_123_cmW_proof = Pedersen::prove(
+            &pedersen_params,
+            &mut transcript_p,
+            &phi_123.cmW,
+            fw_123.W,
+            fw_123.rW,
+        );
+        let v = Pedersen::verify(
+            &pedersen_params,
+            &mut transcript_v,
+            phi_123.cmW,
+            phi_123_cmW_proof,
         );
     }
 }
