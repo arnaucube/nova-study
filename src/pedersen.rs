@@ -51,14 +51,13 @@ impl<C: AffineRepr> Pedersen<C> {
         let cm: C = (params.g.mul(v) + params.h.mul(r)).into();
         CommitmentElem::<C> { cm, r }
     }
-    pub fn commit<R: RngCore>(
-        rng: &mut R,
+    pub fn commit(
         params: &Params<C>,
         v: &Vec<C::ScalarField>,
+        r: &C::ScalarField, // random value is provided, in order to be choosen by other parts of the protocol
     ) -> Commitment<C> {
-        let r = C::ScalarField::rand(rng);
         let cm = params.h.mul(r) + naive_msm(v, &params.r_vec);
-        Commitment::<C> { cm: cm.into(), r }
+        Commitment::<C>(cm.into())
     }
 
     pub fn prove_elem(
@@ -85,7 +84,7 @@ impl<C: AffineRepr> Pedersen<C> {
     pub fn prove(
         params: &Params<C>,
         transcript: &mut Transcript<C::ScalarField>,
-        cm: C,
+        cm: &Commitment<C>, // TODO maybe it makes sense to not have a type wrapper and use directly C
         v: Vec<C::ScalarField>,
         r: C::ScalarField,
     ) -> Proof<C> {
@@ -94,7 +93,7 @@ impl<C: AffineRepr> Pedersen<C> {
 
         let R: C = (params.h.mul(r1) + naive_msm(&d, &params.r_vec)).into();
 
-        transcript.add(b"cm", &cm);
+        transcript.add(b"cm", &cm.0);
         transcript.add(b"R", &R);
         let e = transcript.get_challenge(b"e");
 
@@ -106,17 +105,17 @@ impl<C: AffineRepr> Pedersen<C> {
     pub fn verify(
         params: &Params<C>,
         transcript: &mut Transcript<C::ScalarField>,
-        cm: C,
+        cm: Commitment<C>,
         proof: Proof<C>,
     ) -> bool {
         // r1, d just to match Prover's transcript
         transcript.get_challenge(b"r_1");
         transcript.get_challenge_vec(b"d", proof.u_.len());
 
-        transcript.add(b"cm", &cm);
+        transcript.add(b"cm", &cm.0);
         transcript.add(b"R", &proof.R);
         let e = transcript.get_challenge(b"e");
-        let lhs = proof.R + cm.mul(e);
+        let lhs = proof.R + cm.0.mul(e);
         let rhs = params.h.mul(proof.ru_) + naive_msm(&proof.u_, &params.r_vec);
         if lhs != rhs {
             return false;
@@ -146,20 +145,7 @@ impl<C: AffineRepr> Pedersen<C> {
     }
 }
 
-pub struct Commitment<C: AffineRepr> {
-    pub cm: C,
-    pub r: C::ScalarField,
-}
-impl<C: AffineRepr> Commitment<C> {
-    pub fn prove(
-        &self,
-        params: &Params<C>,
-        transcript: &mut Transcript<C::ScalarField>,
-        v: Vec<C::ScalarField>,
-    ) -> Proof<C> {
-        Pedersen::<C>::prove(params, transcript, self.cm, v, self.r)
-    }
-}
+pub struct Commitment<C: AffineRepr>(pub C);
 
 pub struct CommitmentElem<C: AffineRepr> {
     pub cm: C,
@@ -219,13 +205,11 @@ mod tests {
         // init Verifier's transcript
         let mut transcript_v: Transcript<Fr> = Transcript::<Fr>::new();
 
-        let mut v: Vec<Fr> = vec![Fr::rand(&mut rng); n];
-
-        let cm = Pedersen::commit(&mut rng, &params, &v);
-        let proof = cm.prove(&params, &mut transcript_p, v);
-        // also can use:
-        // let proof = Pedersen::prove(&params, &mut transcript_p, cm.cm, v, cm.r);
-        let v = Pedersen::verify(&params, &mut transcript_v, cm.cm, proof);
+        let v: Vec<Fr> = vec![Fr::rand(&mut rng); n];
+        let r: Fr = Fr::rand(&mut rng);
+        let cm = Pedersen::commit(&params, &v, &r);
+        let proof = Pedersen::prove(&params, &mut transcript_p, &cm, v, r);
+        let v = Pedersen::verify(&params, &mut transcript_v, cm, proof);
         assert!(v);
     }
 }
