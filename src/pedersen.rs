@@ -6,12 +6,17 @@ use ark_std::{
 use std::marker::PhantomData;
 
 use crate::transcript::Transcript;
-use crate::utils::naive_msm;
+use crate::utils::{naive_msm, vec_add, vector_elem_product};
 
-pub struct Proof<C: AffineRepr> {
+pub struct Proof_elem<C: AffineRepr> {
     R: C,
     t1: C::ScalarField,
     t2: C::ScalarField,
+}
+pub struct Proof<C: AffineRepr> {
+    R: C,
+    u_: Vec<C::ScalarField>,
+    ru_: C::ScalarField,
 }
 
 pub struct Params<C: AffineRepr> {
@@ -46,9 +51,14 @@ impl<C: AffineRepr> Pedersen<C> {
         let cm: C = (params.g.mul(v) + params.h.mul(r)).into();
         CommitmentElem::<C> { cm, r }
     }
-    pub fn commit(rs: &Vec<C>, v: &Vec<C::ScalarField>) -> Commitment<C> {
-        let cm = naive_msm(v, &rs);
-        Commitment::<C>(cm)
+    pub fn commit<R: RngCore>(
+        rng: &mut R,
+        params: &Params<C>,
+        v: &Vec<C::ScalarField>,
+    ) -> Commitment<C> {
+        let r = C::ScalarField::rand(rng);
+        let cm = params.h.mul(r) + naive_msm(v, &params.r_vec);
+        Commitment::<C> { cm: cm.into(), r }
     }
 
     pub fn prove_elem(
@@ -57,36 +67,77 @@ impl<C: AffineRepr> Pedersen<C> {
         cm: C,
         v: C::ScalarField,
         r: C::ScalarField,
-    ) -> Proof<C> {
-        let s1 = transcript.get_challenge(b"s_1");
-        let s2 = transcript.get_challenge(b"s_2");
+    ) -> Proof_elem<C> {
+        let r1 = transcript.get_challenge(b"r_1");
+        let r2 = transcript.get_challenge(b"r_2");
 
-        let R: C = (params.g.mul(s1) + params.h.mul(s2)).into();
+        let R: C = (params.g.mul(r1) + params.h.mul(r2)).into();
 
         transcript.add(b"cm", &cm);
         transcript.add(b"R", &R);
-        let c = transcript.get_challenge(b"c");
+        let e = transcript.get_challenge(b"e");
 
-        let t1 = s1 + v * c;
-        let t2 = s2 + r * c;
+        let t1 = r1 + v * e;
+        let t2 = r2 + r * e;
 
-        Proof::<C> { R, t1, t2 }
+        Proof_elem::<C> { R, t1, t2 }
+    }
+    pub fn prove(
+        params: &Params<C>,
+        transcript: &mut Transcript<C::ScalarField>,
+        cm: C,
+        v: Vec<C::ScalarField>,
+        r: C::ScalarField,
+    ) -> Proof<C> {
+        let r1 = transcript.get_challenge(b"r_1");
+        let d = transcript.get_challenge_vec(b"d", v.len());
+
+        let R: C = (params.h.mul(r1) + naive_msm(&d, &params.r_vec)).into();
+
+        transcript.add(b"cm", &cm);
+        transcript.add(b"R", &R);
+        let e = transcript.get_challenge(b"e");
+
+        let u_ = vec_add(&vector_elem_product(&v, &e), &d);
+        let ru_ = e * r + r1;
+
+        Proof::<C> { R, u_, ru_ }
+    }
+    pub fn verify(
+        params: &Params<C>,
+        transcript: &mut Transcript<C::ScalarField>,
+        cm: C,
+        proof: Proof<C>,
+    ) -> bool {
+        // r1, d just to match Prover's transcript
+        transcript.get_challenge(b"r_1");
+        transcript.get_challenge_vec(b"d", proof.u_.len());
+
+        transcript.add(b"cm", &cm);
+        transcript.add(b"R", &proof.R);
+        let e = transcript.get_challenge(b"e");
+        let lhs = proof.R + cm.mul(e);
+        let rhs = params.h.mul(proof.ru_) + naive_msm(&proof.u_, &params.r_vec);
+        if lhs != rhs {
+            return false;
+        }
+        true
     }
 
     pub fn verify_elem(
         params: &Params<C>,
         transcript: &mut Transcript<C::ScalarField>,
         cm: C,
-        proof: Proof<C>,
+        proof: Proof_elem<C>,
     ) -> bool {
         // s1, s2 just to match Prover's transcript
-        transcript.get_challenge(b"s_1");
-        transcript.get_challenge(b"s_2");
+        transcript.get_challenge(b"r_1");
+        transcript.get_challenge(b"r_2");
 
         transcript.add(b"cm", &cm);
         transcript.add(b"R", &proof.R);
-        let c = transcript.get_challenge(b"c");
-        let lhs = proof.R + cm.mul(c);
+        let e = transcript.get_challenge(b"e");
+        let lhs = proof.R + cm.mul(e);
         let rhs = params.g.mul(proof.t1) + params.h.mul(proof.t2);
         if lhs != rhs {
             return false;
@@ -95,7 +146,20 @@ impl<C: AffineRepr> Pedersen<C> {
     }
 }
 
-pub struct Commitment<C: AffineRepr>(pub C);
+pub struct Commitment<C: AffineRepr> {
+    pub cm: C,
+    pub r: C::ScalarField,
+}
+impl<C: AffineRepr> Commitment<C> {
+    pub fn prove(
+        &self,
+        params: &Params<C>,
+        transcript: &mut Transcript<C::ScalarField>,
+        v: Vec<C::ScalarField>,
+    ) -> Proof<C> {
+        Pedersen::<C>::prove(params, transcript, self.cm, v, self.r)
+    }
+}
 
 pub struct CommitmentElem<C: AffineRepr> {
     pub cm: C,
@@ -107,7 +171,7 @@ impl<C: AffineRepr> CommitmentElem<C> {
         params: &Params<C>,
         transcript: &mut Transcript<C::ScalarField>,
         v: C::ScalarField,
-    ) -> Proof<C> {
+    ) -> Proof_elem<C> {
         Pedersen::<C>::prove_elem(params, transcript, self.cm, v, self.r)
     }
 }
@@ -120,7 +184,7 @@ mod tests {
     use std::ops::Mul;
 
     #[test]
-    fn test_pedersen() {
+    fn test_pedersen_single_element() {
         let mut rng = ark_std::test_rng();
 
         // setup params
@@ -140,6 +204,28 @@ mod tests {
         // also can use:
         // let proof = Pedersen::prove_elem(&params, &mut transcript_p, cm.cm, v, cm.r);
         let v = Pedersen::verify_elem(&params, &mut transcript_v, cm.cm, proof);
+        assert!(v);
+    }
+    #[test]
+    fn test_pedersen_vector() {
+        let mut rng = ark_std::test_rng();
+
+        const n: usize = 10;
+        // setup params
+        let params = Pedersen::<G1Affine>::new_params(&mut rng, n);
+
+        // init Prover's transcript
+        let mut transcript_p: Transcript<Fr> = Transcript::<Fr>::new();
+        // init Verifier's transcript
+        let mut transcript_v: Transcript<Fr> = Transcript::<Fr>::new();
+
+        let mut v: Vec<Fr> = vec![Fr::rand(&mut rng); n];
+
+        let cm = Pedersen::commit(&mut rng, &params, &v);
+        let proof = cm.prove(&params, &mut transcript_p, v);
+        // also can use:
+        // let proof = Pedersen::prove(&params, &mut transcript_p, cm.cm, v, cm.r);
+        let v = Pedersen::verify(&params, &mut transcript_v, cm.cm, proof);
         assert!(v);
     }
 }

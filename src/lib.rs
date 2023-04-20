@@ -3,7 +3,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(unused)] // TMP
 
-mod nifs;
+// mod nifs;
 mod pedersen;
 mod r1cs;
 mod transcript;

@@ -29,4 +29,11 @@ impl<F: PrimeField> Transcript<F> {
         self.add(b"get challenge", &challenge);
         challenge
     }
+    pub fn get_challenge_vec(&mut self, label: &'static [u8], n: usize) -> Vec<F> {
+        let mut c: Vec<F> = vec![F::zero(); n];
+        for i in 0..n {
+            c[i] = self.get_challenge(label);
+        }
+        c
+    }
 }
