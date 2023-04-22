@@ -4,6 +4,7 @@
 #![allow(unused)] // TMP
 
 mod nifs;
+mod novacircuit;
 mod pedersen;
 mod r1cs;
 mod transcript;

@@ -15,5 +15,13 @@ ark-serialize = { version = "0.4.0", default-features = false, features = [ "der
 rand = { version = "0.8", features = [ "std", "std_rng" ] }
 merlin = { version = "3.0.0" }
 
+ark-crypto-primitives = { version = "^0.4.0", default-features = true, features = [ "r1cs", "snark" ] }
+ark-r1cs-std = { version = "^0.4.0", default-features = false }
+ark-relations = { version = "^0.4.0", default-features = false }
+ark-snark = { version = "^0.4.0", default-features = false }
+tracing = { version = "0.1", default-features = false, features = [ "attributes" ] }
+tracing-subscriber = { version = "0.2" }
+derivative = { version = "2.0", features = ["use_core"] }
+
 [dev-dependencies]
 ark-bn254 = { version = "0.4.0", default-features = false, features=["curve"] }
