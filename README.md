@@ -6,4 +6,4 @@ Implementation of [Nova](https://eprint.iacr.org/2021/370.pdf) using [arkworks-r
 
 This repo is an ongoing implementation, the code will be dirty for a while and not optimized but just to understand and experiment with the internals of the scheme and try experimental combinations.
 
-Thanks to [levs57](https://twitter.com/levs57) for clarifications on the Nova folding.
+Thanks to [Levs57](https://twitter.com/levs57), [Nalin Bhardwaj](https://twitter.com/nibnalin) and [Carlos](https://twitter.com/cperezz19) for clarifications on the Nova paper.

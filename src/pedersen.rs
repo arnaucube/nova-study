@@ -85,8 +85,8 @@ impl<C: AffineRepr> Pedersen<C> {
         params: &Params<C>,
         transcript: &mut Transcript<C::ScalarField>,
         cm: &Commitment<C>, // TODO maybe it makes sense to not have a type wrapper and use directly C
-        v: Vec<C::ScalarField>,
-        r: C::ScalarField,
+        v: &Vec<C::ScalarField>,
+        r: &C::ScalarField,
     ) -> Proof<C> {
         let r1 = transcript.get_challenge(b"r_1");
         let d = transcript.get_challenge_vec(b"d", v.len());
@@ -208,7 +208,7 @@ mod tests {
         let v: Vec<Fr> = vec![Fr::rand(&mut rng); n];
         let r: Fr = Fr::rand(&mut rng);
         let cm = Pedersen::commit(&params, &v, &r);
-        let proof = Pedersen::prove(&params, &mut transcript_p, &cm, v, r);
+        let proof = Pedersen::prove(&params, &mut transcript_p, &cm, &v, &r);
         let v = Pedersen::verify(&params, &mut transcript_v, cm, proof);
         assert!(v);
     }
