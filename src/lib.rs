@@ -3,9 +3,9 @@
 #![allow(non_upper_case_globals)]
 #![allow(unused)] // TMP
 
+mod circuits;
 mod nifs;
-mod novacircuit;
 mod pedersen;
-mod r1cs;
+mod sumcheck;
 mod transcript;
 mod utils;

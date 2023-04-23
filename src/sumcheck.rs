@@ -1,5 +1,5 @@
 // Sum-check protocol initial implementation, not used by the rest of the repo but implemented as
-// an exercise and might be used in the future.
+// an exercise and it will probably be used in the future.
 
 use ark_ff::{BigInteger, PrimeField};
 use ark_poly::{
@@ -13,6 +13,8 @@ use ark_std::log2;
 use ark_std::marker::PhantomData;
 use ark_std::ops::Mul;
 use ark_std::{rand::Rng, UniformRand};
+
+use crate::transcript::Transcript;
 
 pub struct SumCheck<
     F: PrimeField,
@@ -81,10 +83,8 @@ impl<
 
     fn point_complete(challenges: Vec<F>, n_elems: usize, iter_num: usize) -> Vec<F> {
         let p = Self::point(challenges, false, n_elems, iter_num);
-        // let mut r = Vec::new();
         let mut r = vec![F::zero(); n_elems];
         for i in 0..n_elems {
-            // r.push(p[i].unwrap());
             r[i] = p[i].unwrap();
         }
         r
@@ -96,7 +96,7 @@ impl<
         if none {
             // WIP
             if n_vars == 0 {
-                panic!("err");
+                panic!("err"); // or return directly challenges vector
             }
             n_vars -= 1;
         }
@@ -125,9 +125,10 @@ impl<
     where
         <MV as Polynomial<F>>::Point: From<Vec<F>>,
     {
-        let v = g.num_vars();
+        // init transcript
+        let mut transcript: Transcript<F> = Transcript::<F>::new();
 
-        let r = vec![F::from(2_u32), F::from(3_u32), F::from(6_u32)]; // TMP will come from transcript
+        let v = g.num_vars();
 
         // compute H
         let mut H = F::zero();
@@ -136,43 +137,56 @@ impl<
 
             H = H + g.evaluate(&p.into());
         }
+        transcript.add(b"H", &H);
 
         let mut ss: Vec<UV> = Vec::new();
+        let mut r: Vec<F> = vec![];
         for i in 0..v {
+            let r_i = transcript.get_challenge(b"r_i");
+            r.push(r_i);
+
             let var_slots = v - 1 - i;
             let n_points = 2_u64.pow(var_slots as u32) as usize;
+
             let mut s_i = UV::zero();
-            let r_round = r.as_slice()[..i].to_vec();
             for j in 0..n_points {
-                let point = Self::point(r_round.clone(), true, v, j);
+                let point = Self::point(r[..i].to_vec(), true, v, j);
                 s_i = s_i + Self::partial_evaluate(&g, &point);
             }
+            transcript.add(b"s_i", &s_i);
             ss.push(s_i);
         }
 
-        let point_last = r;
-        let last_g_eval = g.evaluate(&point_last.into());
+        let last_g_eval = g.evaluate(&r.into());
         (H, ss, last_g_eval)
     }
 
     pub fn verify(proof: (F, Vec<UV>, F)) -> bool {
-        // let c: F, ss: Vec<UV>;
+        // init transcript
+        let mut transcript: Transcript<F> = Transcript::<F>::new();
+        transcript.add(b"H", &proof.0);
+
         let (c, ss, last_g_eval) = proof;
 
-        let r = vec![F::from(2_u32), F::from(3_u32), F::from(6_u32)]; // TMP will come from transcript
-
+        let mut r: Vec<F> = vec![];
         for (i, s) in ss.iter().enumerate() {
             // TODO check degree
             if i == 0 {
                 if c != s.evaluate(&F::zero()) + s.evaluate(&F::one()) {
                     return false;
                 }
+                let r_i = transcript.get_challenge(b"r_i");
+                r.push(r_i);
+                transcript.add(b"s_i", s);
                 continue;
             }
 
+            let r_i = transcript.get_challenge(b"r_i");
+            r.push(r_i);
             if ss[i - 1].evaluate(&r[i - 1]) != s.evaluate(&F::zero()) + s.evaluate(&F::one()) {
                 return false;
             }
+            transcript.add(b"s_i", s);
         }
         // last round
         if ss[ss.len() - 1].evaluate(&r[r.len() - 1]) != last_g_eval {
@@ -264,9 +278,6 @@ mod tests {
     #[test]
     fn test_flow_hardcoded_values() {
         let mut rng = ark_std::test_rng();
-        // let p = SparsePolynomial::<Fr, SparseTerm>::rand(deg, 3, &mut rng);
-        // let p = rand_poly(3, 3, &mut rng);
-
         // g(X_0, X_1, X_2) = 2 X_0^3 + X_0 X_2 + X_1 X_2
         let terms = vec![
             (Fr::from(2u32), SparseTerm::new(vec![(0_usize, 3)])),
@@ -286,17 +297,43 @@ mod tests {
 
         let proof = SC::prove(p);
         assert_eq!(proof.0, Fr::from(12_u32));
-        println!("proof {:?}", proof);
+        // println!("proof {:?}", proof);
 
         let v = SC::verify(proof);
         assert!(v);
     }
 
+    fn rand_poly<R: Rng>(l: usize, d: usize, rng: &mut R) -> SparsePolynomial<Fr, SparseTerm> {
+        // This method is from the arkworks/algebra/poly/multivariate test:
+        // https://github.com/arkworks-rs/algebra/blob/bc991d44c5e579025b7ed56df3d30267a7b9acac/poly/src/polynomial/multivariate/sparse.rs#L303
+        let mut random_terms = Vec::new();
+        let num_terms = rng.gen_range(1..1000);
+        // For each term, randomly select up to `l` variables with degree
+        // in [1,d] and random coefficient
+        random_terms.push((Fr::rand(rng), SparseTerm::new(vec![])));
+        for _ in 1..num_terms {
+            let term = (0..l)
+                .map(|i| {
+                    if rng.gen_bool(0.5) {
+                        Some((i, rng.gen_range(1..(d + 1))))
+                    } else {
+                        None
+                    }
+                })
+                .flatten()
+                .collect();
+            let coeff = Fr::rand(rng);
+            random_terms.push((coeff, SparseTerm::new(term)));
+        }
+        SparsePolynomial::from_coefficients_slice(l, &random_terms)
+    }
+
     #[test]
     fn test_flow_rng() {
         let mut rng = ark_std::test_rng();
-        let p = SparsePolynomial::<Fr, SparseTerm>::rand(3, 3, &mut rng);
-        println!("p {:?}", p);
+        // let p = SparsePolynomial::<Fr, SparseTerm>::rand(3, 3, &mut rng);
+        let p = rand_poly(3, 3, &mut rng);
+        // println!("p {:?}", p);
 
         type SC = SumCheck<Fr, DensePolynomial<Fr>, SparsePolynomial<Fr, SparseTerm>>;
 

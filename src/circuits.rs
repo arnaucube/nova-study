@@ -1,4 +1,5 @@
 use ark_crypto_primitives::snark::{FromFieldElementsGadget, SNARKGadget, SNARK};
+use ark_ec::AffineRepr;
 use ark_ec::CurveGroup;
 use ark_ff::{fields::Fp256, Field, PrimeField};
 use ark_r1cs_std::{
@@ -42,8 +43,6 @@ impl<Fq: PrimeField, Fr: PrimeField, C: CurveGroup, GC: CurveVar<C, Fq>, Cfg: Co
 {
     fn generate_constraints(self, cs: ConstraintSystemRef<Fq>) -> Result<(), SynthesisError> {
         unimplemented!();
-        // nifscircuit::NIFSGadget::<Fq, C, GC<Fq, C>>::verify();
-        // hash
     }
 }
 

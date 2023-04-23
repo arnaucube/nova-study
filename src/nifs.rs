@@ -1,15 +1,21 @@
 use ark_ec::AffineRepr;
-use ark_std::{One, Zero};
-use std::marker::PhantomData;
-
-use crate::pedersen::{Commitment, Params as PedersenParams, Pedersen, Proof as PedersenProof};
-use crate::r1cs::*;
-use crate::transcript::Transcript;
-use crate::utils::*;
+use ark_ff::fields::PrimeField;
 use ark_std::{
     rand::{Rng, RngCore},
     UniformRand,
 };
+use ark_std::{One, Zero};
+use std::marker::PhantomData;
+
+use crate::pedersen::{Commitment, Params as PedersenParams, Pedersen, Proof as PedersenProof};
+use crate::transcript::Transcript;
+use crate::utils::*;
+
+pub struct R1CS<F: PrimeField> {
+    pub A: Vec<Vec<F>>,
+    pub B: Vec<Vec<F>>,
+    pub C: Vec<Vec<F>>,
+}
 
 // Phi: φ in the paper (later 𝖴), a folded instance
 pub struct Phi<C: AffineRepr> {

@@ -3,6 +3,8 @@ use ark_serialize::CanonicalSerialize;
 use merlin::Transcript as MerlinTranscript;
 use std::marker::PhantomData;
 
+// TODO poseidon transcript (not keccak)
+
 // This Transcript approach is a modified version from https://github.com/arkworks-rs/gemini ,
 // using Merlin transcript (https://merlin.cool).
 pub struct Transcript<F: PrimeField> {

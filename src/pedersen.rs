@@ -22,7 +22,7 @@ pub struct Proof<C: AffineRepr> {
 pub struct Params<C: AffineRepr> {
     g: C,
     h: C,
-    pub r_vec: Vec<C>,
+    pub generators: Vec<C>,
 }
 
 pub struct Pedersen<C: AffineRepr> {
@@ -33,11 +33,11 @@ impl<C: AffineRepr> Pedersen<C> {
     pub fn new_params<R: Rng>(rng: &mut R, max: usize) -> Params<C> {
         let h_scalar = C::ScalarField::rand(rng);
         let g: C = C::generator();
-        let r_vec: Vec<C> = vec![C::rand(rng); max];
+        let generators: Vec<C> = vec![C::rand(rng); max];
         let params: Params<C> = Params::<C> {
             g,
             h: g.mul(h_scalar).into(),
-            r_vec, // will need 2 r: rE, rW
+            generators,
         };
         params
     }
@@ -56,7 +56,7 @@ impl<C: AffineRepr> Pedersen<C> {
         v: &Vec<C::ScalarField>,
         r: &C::ScalarField, // random value is provided, in order to be choosen by other parts of the protocol
     ) -> Commitment<C> {
-        let cm = params.h.mul(r) + naive_msm(v, &params.r_vec);
+        let cm = params.h.mul(r) + naive_msm(v, &params.generators);
         Commitment::<C>(cm.into())
     }
 
@@ -91,7 +91,7 @@ impl<C: AffineRepr> Pedersen<C> {
         let r1 = transcript.get_challenge(b"r_1");
         let d = transcript.get_challenge_vec(b"d", v.len());
 
-        let R: C = (params.h.mul(r1) + naive_msm(&d, &params.r_vec)).into();
+        let R: C = (params.h.mul(r1) + naive_msm(&d, &params.generators)).into();
 
         transcript.add(b"cm", &cm.0);
         transcript.add(b"R", &R);
@@ -116,7 +116,7 @@ impl<C: AffineRepr> Pedersen<C> {
         transcript.add(b"R", &proof.R);
         let e = transcript.get_challenge(b"e");
         let lhs = proof.R + cm.0.mul(e);
-        let rhs = params.h.mul(proof.ru_) + naive_msm(&proof.u_, &params.r_vec);
+        let rhs = params.h.mul(proof.ru_) + naive_msm(&proof.u_, &params.generators);
         if lhs != rhs {
             return false;
         }
