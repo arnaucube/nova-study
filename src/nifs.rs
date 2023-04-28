@@ -1,4 +1,5 @@
-use ark_ec::AffineRepr;
+// use ark_ec::AffineRepr;
+use ark_ec::CurveGroup;
 use ark_ff::fields::PrimeField;
 use ark_std::{
     rand::{Rng, RngCore},
@@ -18,22 +19,23 @@ pub struct R1CS<F: PrimeField> {
 }
 
 // Phi: φ in the paper (later 𝖴), a folded instance
-pub struct Phi<C: AffineRepr> {
-    cmE: Commitment<C>,
-    u: C::ScalarField,
-    cmW: Commitment<C>,
-    x: Vec<C::ScalarField>,
+#[derive(Clone, Debug)]
+pub struct Phi<C: CurveGroup> {
+    pub cmE: Commitment<C>,
+    pub u: C::ScalarField,
+    pub cmW: Commitment<C>,
+    pub x: C::ScalarField,
 }
 
 // FWit: Folded Witness
-pub struct FWit<C: AffineRepr> {
+pub struct FWit<C: CurveGroup> {
     E: Vec<C::ScalarField>,
     rE: C::ScalarField,
     W: Vec<C::ScalarField>,
     rW: C::ScalarField,
 }
 
-impl<C: AffineRepr> FWit<C> {
+impl<C: CurveGroup> FWit<C> {
     pub fn new(z: Vec<C::ScalarField>, e_len: usize) -> Self {
         FWit::<C> {
             E: vec![C::ScalarField::zero(); e_len],
@@ -49,16 +51,16 @@ impl<C: AffineRepr> FWit<C> {
             cmE,
             u: C::ScalarField::one(),
             cmW,
-            x: self.W.clone(),
+            x: self.W[0].clone(), // TODO WIP review
         }
     }
 }
 
-pub struct NIFS<C: AffineRepr> {
+pub struct NIFS<C: CurveGroup> {
     _phantom: PhantomData<C>,
 }
 
-impl<C: AffineRepr> NIFS<C> {
+impl<C: CurveGroup> NIFS<C> {
     // comp_T: compute cross-terms T
     pub fn comp_T(
         r1cs: &R1CS<C::ScalarField>,
@@ -123,13 +125,13 @@ impl<C: AffineRepr> NIFS<C> {
         let cmE = phi1.cmE.0 + cmT.0.mul(r) + phi2.cmE.0.mul(r2);
         let u = phi1.u + r * phi2.u;
         let cmW = phi1.cmW.0 + phi2.cmW.0.mul(r);
-        let x = vec_add(&phi1.x, &vector_elem_product(&phi2.x, &r));
-        // let x = rlin(phi1.x, phi2.x, r);
+        // let x = vec_add(&phi1.x, &vector_elem_product(&phi2.x, &r));
+        let x = phi1.x + r * phi2.x;
 
         Phi::<C> {
-            cmE: Commitment(cmE.into()),
+            cmE: Commitment(cmE),
             u,
-            cmW: Commitment(cmW.into()),
+            cmW: Commitment(cmW),
             x,
         }
     }
@@ -174,16 +176,17 @@ impl<C: AffineRepr> NIFS<C> {
         cmT: &Commitment<C>,
     ) -> bool {
         let r2 = r * r;
-        if phi3.cmE.0 != (phi1.cmE.0 + cmT.0.mul(r) + phi2.cmE.0.mul(r2)).into() {
+        if phi3.cmE.0 != (phi1.cmE.0 + cmT.0.mul(r) + phi2.cmE.0.mul(r2)) {
             return false;
         }
         if phi3.u != phi1.u + r * phi2.u {
             return false;
         }
-        if phi3.cmW.0 != (phi1.cmW.0 + phi2.cmW.0.mul(r)).into() {
+        if phi3.cmW.0 != (phi1.cmW.0 + phi2.cmW.0.mul(r)) {
             return false;
         }
-        if phi3.x != vec_add(&phi1.x, &vector_elem_product(&phi2.x, &r)) {
+        // if phi3.x != vec_add(&phi1.x, &vector_elem_product(&phi2.x, &r)) {
+        if phi3.x != phi1.x + r * phi2.x {
             return false;
         }
         true
@@ -225,12 +228,53 @@ impl<C: AffineRepr> NIFS<C> {
     }
 }
 
+// only for tests across different files
+pub fn gen_test_values<R: Rng, F: PrimeField>(
+    rng: &mut R,
+) -> (R1CS<F>, Vec<F>, Vec<F>, Vec<F>, Vec<F>, Vec<F>, Vec<F>) {
+    // R1CS for: x^3 + x + 5 = y (example from article
+    // https://www.vitalik.ca/general/2016/12/10/qap.html )
+    let A = to_F_matrix::<F>(vec![
+        vec![0, 1, 0, 0, 0, 0],
+        vec![0, 0, 0, 1, 0, 0],
+        vec![0, 1, 0, 0, 1, 0],
+        vec![5, 0, 0, 0, 0, 1],
+    ]);
+    let B = to_F_matrix::<F>(vec![
+        vec![0, 1, 0, 0, 0, 0],
+        vec![0, 1, 0, 0, 0, 0],
+        vec![1, 0, 0, 0, 0, 0],
+        vec![1, 0, 0, 0, 0, 0],
+    ]);
+    let C = to_F_matrix::<F>(vec![
+        vec![0, 0, 0, 1, 0, 0],
+        vec![0, 0, 0, 0, 1, 0],
+        vec![0, 0, 0, 0, 0, 1],
+        vec![0, 0, 1, 0, 0, 0],
+    ]);
+    // TODO in the future update this method to generate witness, and generate n witnesses
+    // instances, x: pub
+    let w1 = to_F_vec::<F>(vec![1, 3, 35, 9, 27, 30]);
+    let x1 = to_F_vec::<F>(vec![35]);
+    let w2 = to_F_vec::<F>(vec![1, 4, 73, 16, 64, 68]);
+    let x2 = to_F_vec::<F>(vec![73]);
+    let w3 = to_F_vec::<F>(vec![1, 5, 135, 25, 125, 130]);
+    let x3 = to_F_vec::<F>(vec![135]);
+
+    let r1cs = R1CS::<F> {
+        A: A.clone(),
+        B: B.clone(),
+        C: C.clone(),
+    };
+    (r1cs, w1, w2, w3, x1, x2, x3)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::pedersen::Pedersen;
-    use ark_bn254::{g1::G1Affine, Fr};
     use ark_ec::CurveGroup;
+    use ark_mnt4_298::{Fr, G1Projective};
     use ark_std::{
         rand::{Rng, RngCore},
         UniformRand,
@@ -238,81 +282,33 @@ mod tests {
     use ark_std::{One, Zero};
     use std::ops::Mul;
 
-    fn gen_test_values<R: Rng>(
-        rng: &mut R,
-    ) -> (
-        R1CS<Fr>,
-        Vec<Fr>,
-        Vec<Fr>,
-        Vec<Fr>,
-        Vec<Fr>,
-        Vec<Fr>,
-        Vec<Fr>,
-    ) {
-        // R1CS for: x^3 + x + 5 = y (example from article
-        // https://www.vitalik.ca/general/2016/12/10/qap.html )
-        let A = to_F_matrix::<Fr>(vec![
-            vec![0, 1, 0, 0, 0, 0],
-            vec![0, 0, 0, 1, 0, 0],
-            vec![0, 1, 0, 0, 1, 0],
-            vec![5, 0, 0, 0, 0, 1],
-        ]);
-        let B = to_F_matrix::<Fr>(vec![
-            vec![0, 1, 0, 0, 0, 0],
-            vec![0, 1, 0, 0, 0, 0],
-            vec![1, 0, 0, 0, 0, 0],
-            vec![1, 0, 0, 0, 0, 0],
-        ]);
-        let C = to_F_matrix::<Fr>(vec![
-            vec![0, 0, 0, 1, 0, 0],
-            vec![0, 0, 0, 0, 1, 0],
-            vec![0, 0, 0, 0, 0, 1],
-            vec![0, 0, 1, 0, 0, 0],
-        ]);
-        // TODO in the future update this method to generate witness, and generate n witnesses
-        // instances, x: pub
-        let w1 = to_F_vec::<Fr>(vec![1, 3, 35, 9, 27, 30]);
-        let x1 = to_F_vec::<Fr>(vec![35]);
-        let w2 = to_F_vec::<Fr>(vec![1, 4, 73, 16, 64, 68]);
-        let x2 = to_F_vec::<Fr>(vec![73]);
-        let w3 = to_F_vec::<Fr>(vec![1, 5, 135, 25, 125, 130]);
-        let x3 = to_F_vec::<Fr>(vec![135]);
-
-        let r1cs = R1CS::<Fr> {
-            A: A.clone(),
-            B: B.clone(),
-            C: C.clone(),
-        };
-        (r1cs, w1, w2, w3, x1, x2, x3)
-    }
-
     // fold 2 instances into one
     #[test]
     fn test_one_fold() {
         let mut rng = ark_std::test_rng();
-        let pedersen_params = Pedersen::<G1Affine>::new_params(&mut rng, 100); // 100 is wip, will get it from actual vec
+        let pedersen_params = Pedersen::<G1Projective>::new_params(&mut rng, 100); // 100 is wip, will get it from actual vec
 
         let (r1cs, w1, w2, _, x1, x2, _) = gen_test_values(&mut rng);
         let (A, B, C) = (r1cs.A.clone(), r1cs.B.clone(), r1cs.C.clone());
 
         let r = Fr::rand(&mut rng); // this would come from the transcript
 
-        let fw1 = FWit::<G1Affine>::new(w1.clone(), A.len());
-        let fw2 = FWit::<G1Affine>::new(w2.clone(), A.len());
+        let fw1 = FWit::<G1Projective>::new(w1.clone(), A.len());
+        let fw2 = FWit::<G1Projective>::new(w2.clone(), A.len());
 
         // get committed instances
         let phi1 = fw1.commit(&pedersen_params); // wip
         let phi2 = fw2.commit(&pedersen_params);
 
-        let T = NIFS::<G1Affine>::comp_T(&r1cs, phi1.u, phi2.u, &w1, &w2);
+        let T = NIFS::<G1Projective>::comp_T(&r1cs, phi1.u, phi2.u, &w1, &w2);
         let rT: Fr = Fr::rand(&mut rng);
         let cmT = Pedersen::commit(&pedersen_params, &T, &rT);
 
         // fold witness
-        let fw3 = NIFS::<G1Affine>::fold_witness(r, &fw1, &fw2, &T, rT);
+        let fw3 = NIFS::<G1Projective>::fold_witness(r, &fw1, &fw2, &T, rT);
 
         // fold instance
-        let phi3 = NIFS::<G1Affine>::fold_instance(r, &phi1, &phi2, &cmT);
+        let phi3 = NIFS::<G1Projective>::fold_instance(r, &phi1, &phi2, &cmT);
 
         // naive check that the folded witness satisfies the relaxed r1cs
         let Az = matrix_vector_product(&A, &fw3.W);
@@ -330,7 +326,7 @@ mod tests {
         assert_eq!(phi3_expected.cmW.0, phi3.cmW.0);
 
         // NIFS.Verify:
-        assert!(NIFS::<G1Affine>::verify(r, &phi1, &phi2, &phi3, &cmT));
+        assert!(NIFS::<G1Projective>::verify(r, &phi1, &phi2, &phi3, &cmT));
 
         // init Prover's transcript
         let mut transcript_p: Transcript<Fr> = Transcript::<Fr>::new();
@@ -338,7 +334,7 @@ mod tests {
         let mut transcript_v: Transcript<Fr> = Transcript::<Fr>::new();
 
         // check openings of phi3.cmE, phi3.cmW and cmT
-        let (cmE_proof, cmW_proof, cmT_proof) = NIFS::<G1Affine>::open_commitments(
+        let (cmE_proof, cmW_proof, cmT_proof) = NIFS::<G1Projective>::open_commitments(
             &mut transcript_p,
             &pedersen_params,
             &fw3,
@@ -347,7 +343,7 @@ mod tests {
             rT,
             &cmT,
         );
-        let v = NIFS::<G1Affine>::verify_commitments(
+        let v = NIFS::<G1Projective>::verify_commitments(
             &mut transcript_v,
             &pedersen_params,
             phi3,
@@ -362,41 +358,43 @@ mod tests {
     #[test]
     fn test_two_fold() {
         let mut rng = ark_std::test_rng();
-        let pedersen_params = Pedersen::<G1Affine>::new_params(&mut rng, 6);
+        let pedersen_params = Pedersen::<G1Projective>::new_params(&mut rng, 6);
 
         let (r1cs, w1, w2, w3, x1, x2, x3) = gen_test_values(&mut rng);
 
         let u1: Fr = Fr::one();
         let u2: Fr = Fr::one();
 
-        let T_12 = NIFS::<G1Affine>::comp_T(&r1cs, u1, u2, &w1, &w2);
+        let T_12 = NIFS::<G1Projective>::comp_T(&r1cs, u1, u2, &w1, &w2);
         let rT_12: Fr = Fr::rand(&mut rng);
         let cmT_12 = Pedersen::commit(&pedersen_params, &T_12, &rT_12);
 
         let r = Fr::rand(&mut rng); // this would come from the transcript
 
-        let fw1 = FWit::<G1Affine>::new(w1, T_12.len());
-        let fw2 = FWit::<G1Affine>::new(w2, T_12.len());
+        let fw1 = FWit::<G1Projective>::new(w1, T_12.len());
+        let fw2 = FWit::<G1Projective>::new(w2, T_12.len());
 
         // fold witness
-        let fw_12 = NIFS::<G1Affine>::fold_witness(r, &fw1, &fw2, &T_12, rT_12);
+        let fw_12 = NIFS::<G1Projective>::fold_witness(r, &fw1, &fw2, &T_12, rT_12);
 
         // get committed instances
         let phi1 = fw1.commit(&pedersen_params); // wip
         let phi2 = fw2.commit(&pedersen_params);
 
         // fold instance
-        let phi_12 = NIFS::<G1Affine>::fold_instance(r, &phi1, &phi2, &cmT_12);
+        let phi_12 = NIFS::<G1Projective>::fold_instance(r, &phi1, &phi2, &cmT_12);
 
         // NIFS.Verify:
-        assert!(NIFS::<G1Affine>::verify(r, &phi1, &phi2, &phi_12, &cmT_12));
+        assert!(NIFS::<G1Projective>::verify(
+            r, &phi1, &phi2, &phi_12, &cmT_12
+        ));
 
         //----
         // 2nd fold
-        let fw3 = FWit::<G1Affine>::new(w3, r1cs.A.len());
+        let fw3 = FWit::<G1Projective>::new(w3, r1cs.A.len());
 
         // compute cross terms
-        let T_123 = NIFS::<G1Affine>::comp_T(&r1cs, phi_12.u, Fr::one(), &fw_12.W, &fw3.W);
+        let T_123 = NIFS::<G1Projective>::comp_T(&r1cs, phi_12.u, Fr::one(), &fw_12.W, &fw3.W);
         let rT_123: Fr = Fr::rand(&mut rng);
         let cmT_123 = Pedersen::commit(&pedersen_params, &T_123, &rT_123);
 
@@ -404,7 +402,7 @@ mod tests {
         let r = Fr::rand(&mut rng); // this would come from the transcript
 
         // fold witness
-        let fw_123 = NIFS::<G1Affine>::fold_witness(r, &fw_12, &fw3, &T_123, rT_123);
+        let fw_123 = NIFS::<G1Projective>::fold_witness(r, &fw_12, &fw3, &T_123, rT_123);
 
         // get committed instances
         // phi_12 is already known for Verifier from folding phi1, phi2
@@ -412,10 +410,10 @@ mod tests {
         let phi3 = fw3.commit(&pedersen_params);
 
         // fold instance
-        let phi_123 = NIFS::<G1Affine>::fold_instance(r, &phi_12, &phi3, &cmT_123);
+        let phi_123 = NIFS::<G1Projective>::fold_instance(r, &phi_12, &phi3, &cmT_123);
 
         // NIFS.Verify:
-        assert!(NIFS::<G1Affine>::verify(
+        assert!(NIFS::<G1Projective>::verify(
             r, &phi_12, &phi3, &phi_123, &cmT_123
         ));
 
@@ -440,7 +438,7 @@ mod tests {
         let mut transcript_v: Transcript<Fr> = Transcript::<Fr>::new();
 
         // check openings of phi_123.cmE, phi_123.cmW and cmT_123
-        let (cmE_proof, cmW_proof, cmT_proof) = NIFS::<G1Affine>::open_commitments(
+        let (cmE_proof, cmW_proof, cmT_proof) = NIFS::<G1Projective>::open_commitments(
             &mut transcript_p,
             &pedersen_params,
             &fw_123,
@@ -449,7 +447,7 @@ mod tests {
             rT_123,
             &cmT_123,
         );
-        let v = NIFS::<G1Affine>::verify_commitments(
+        let v = NIFS::<G1Projective>::verify_commitments(
             &mut transcript_v,
             &pedersen_params,
             phi_123,
@@ -464,29 +462,29 @@ mod tests {
     #[test]
     fn test_nifs_interface() {
         let mut rng = ark_std::test_rng();
-        let pedersen_params = Pedersen::<G1Affine>::new_params(&mut rng, 100); // 100 is wip, will get it from actual vec
+        let pedersen_params = Pedersen::<G1Projective>::new_params(&mut rng, 100); // 100 is wip, will get it from actual vec
 
         let (r1cs, w1, w2, _, x1, x2, _) = gen_test_values(&mut rng);
         let (A, B, C) = (r1cs.A.clone(), r1cs.B.clone(), r1cs.C.clone());
 
         let r = Fr::rand(&mut rng); // this would come from the transcript
 
-        let fw1 = FWit::<G1Affine>::new(w1.clone(), A.len());
-        let fw2 = FWit::<G1Affine>::new(w2.clone(), A.len());
+        let fw1 = FWit::<G1Projective>::new(w1.clone(), A.len());
+        let fw2 = FWit::<G1Projective>::new(w2.clone(), A.len());
 
         // init Prover's transcript
         let mut transcript_p: Transcript<Fr> = Transcript::<Fr>::new();
 
         // NIFS.P
         let (fw3, phi1, phi2, T, cmT) =
-            NIFS::<G1Affine>::P(&mut transcript_p, &pedersen_params, r, &r1cs, fw1, fw2);
+            NIFS::<G1Projective>::P(&mut transcript_p, &pedersen_params, r, &r1cs, fw1, fw2);
 
         // init Verifier's transcript
         let mut transcript_v: Transcript<Fr> = Transcript::<Fr>::new();
 
         // NIFS.V
-        let phi3 = NIFS::<G1Affine>::V(r, &phi1, &phi2, &cmT);
+        let phi3 = NIFS::<G1Projective>::V(r, &phi1, &phi2, &cmT);
 
-        assert!(NIFS::<G1Affine>::verify(r, &phi1, &phi2, &phi3, &cmT));
+        assert!(NIFS::<G1Projective>::verify(r, &phi1, &phi2, &phi3, &cmT));
     }
 }

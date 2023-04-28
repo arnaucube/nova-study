@@ -1,4 +1,5 @@
 use ark_ec::AffineRepr;
+use ark_ec::CurveGroup;
 use ark_ff::fields::PrimeField;
 use core::ops::{Add, Sub};
 use std::fmt;
@@ -36,14 +37,14 @@ pub fn hadamard_product<F: PrimeField>(a: Vec<F>, b: Vec<F>) -> Vec<F> {
 //     vec_add(a, vector_elem_product(&b, &r)) // WIP probably group loops
 // }
 
-pub fn naive_msm<C: AffineRepr>(s: &Vec<C::ScalarField>, p: &Vec<C>) -> C {
+pub fn naive_msm<C: CurveGroup>(s: &Vec<C::ScalarField>, p: &Vec<C>) -> C {
     // TODO check lengths, or at least check s.len()>= p.len()
 
     let mut r = p[0].mul(s[0]);
     for i in 1..s.len() {
         r = p[i].mul(s[i]);
     }
-    r.into()
+    r
 }
 
 pub fn vec_add<F: PrimeField>(a: &Vec<F>, b: &Vec<F>) -> Vec<F> {
@@ -124,8 +125,8 @@ pub fn to_F_vec<F: PrimeField>(z: Vec<usize>) -> Vec<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_bn254::{g1::G1Affine, Fr};
     use ark_ec::CurveGroup;
+    use ark_mnt4_298::{g1::G1Affine, Fr};
     use ark_std::{One, Zero};
     use std::ops::Mul;
 

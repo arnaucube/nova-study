@@ -1,4 +1,5 @@
 use ark_ec::AffineRepr;
+use ark_ec::CurveGroup;
 use ark_std::{
     rand::{Rng, RngCore},
     UniformRand,
@@ -8,35 +9,35 @@ use std::marker::PhantomData;
 use crate::transcript::Transcript;
 use crate::utils::{naive_msm, vec_add, vector_elem_product};
 
-pub struct Proof_elem<C: AffineRepr> {
+pub struct Proof_elem<C: CurveGroup> {
     R: C,
     t1: C::ScalarField,
     t2: C::ScalarField,
 }
-pub struct Proof<C: AffineRepr> {
+pub struct Proof<C: CurveGroup> {
     R: C,
     u_: Vec<C::ScalarField>,
     ru_: C::ScalarField,
 }
 
-pub struct Params<C: AffineRepr> {
+pub struct Params<C: CurveGroup> {
     g: C,
     h: C,
     pub generators: Vec<C>,
 }
 
-pub struct Pedersen<C: AffineRepr> {
+pub struct Pedersen<C: CurveGroup> {
     _phantom: PhantomData<C>,
 }
 
-impl<C: AffineRepr> Pedersen<C> {
+impl<C: CurveGroup> Pedersen<C> {
     pub fn new_params<R: Rng>(rng: &mut R, max: usize) -> Params<C> {
         let h_scalar = C::ScalarField::rand(rng);
         let g: C = C::generator();
         let generators: Vec<C> = vec![C::rand(rng); max];
         let params: Params<C> = Params::<C> {
             g,
-            h: g.mul(h_scalar).into(),
+            h: g.mul(h_scalar),
             generators,
         };
         params
@@ -48,7 +49,7 @@ impl<C: AffineRepr> Pedersen<C> {
         v: &C::ScalarField,
     ) -> CommitmentElem<C> {
         let r = C::ScalarField::rand(rng);
-        let cm: C = (params.g.mul(v) + params.h.mul(r)).into();
+        let cm: C = (params.g.mul(v) + params.h.mul(r));
         CommitmentElem::<C> { cm, r }
     }
     pub fn commit(
@@ -57,7 +58,7 @@ impl<C: AffineRepr> Pedersen<C> {
         r: &C::ScalarField, // random value is provided, in order to be choosen by other parts of the protocol
     ) -> Commitment<C> {
         let cm = params.h.mul(r) + naive_msm(v, &params.generators);
-        Commitment::<C>(cm.into())
+        Commitment::<C>(cm)
     }
 
     pub fn prove_elem(
@@ -70,7 +71,7 @@ impl<C: AffineRepr> Pedersen<C> {
         let r1 = transcript.get_challenge(b"r_1");
         let r2 = transcript.get_challenge(b"r_2");
 
-        let R: C = (params.g.mul(r1) + params.h.mul(r2)).into();
+        let R: C = (params.g.mul(r1) + params.h.mul(r2));
 
         transcript.add(b"cm", &cm);
         transcript.add(b"R", &R);
@@ -91,7 +92,7 @@ impl<C: AffineRepr> Pedersen<C> {
         let r1 = transcript.get_challenge(b"r_1");
         let d = transcript.get_challenge_vec(b"d", v.len());
 
-        let R: C = (params.h.mul(r1) + naive_msm(&d, &params.generators)).into();
+        let R: C = params.h.mul(r1) + naive_msm(&d, &params.generators);
 
         transcript.add(b"cm", &cm.0);
         transcript.add(b"R", &R);
@@ -145,13 +146,14 @@ impl<C: AffineRepr> Pedersen<C> {
     }
 }
 
-pub struct Commitment<C: AffineRepr>(pub C);
+#[derive(Clone, Debug)]
+pub struct Commitment<C: CurveGroup>(pub C);
 
-pub struct CommitmentElem<C: AffineRepr> {
+pub struct CommitmentElem<C: CurveGroup> {
     pub cm: C,
     pub r: C::ScalarField,
 }
-impl<C: AffineRepr> CommitmentElem<C> {
+impl<C: CurveGroup> CommitmentElem<C> {
     pub fn prove(
         &self,
         params: &Params<C>,
@@ -165,8 +167,8 @@ impl<C: AffineRepr> CommitmentElem<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_bn254::{g1::G1Affine, Fr};
     use ark_ec::CurveGroup;
+    use ark_mnt4_298::{Fr, G1Projective};
     use std::ops::Mul;
 
     #[test]
@@ -174,7 +176,7 @@ mod tests {
         let mut rng = ark_std::test_rng();
 
         // setup params
-        let params = Pedersen::<G1Affine>::new_params(
+        let params = Pedersen::<G1Projective>::new_params(
             &mut rng, 0, /* 0, as here we don't use commit_vec */
         );
 
@@ -198,7 +200,7 @@ mod tests {
 
         const n: usize = 10;
         // setup params
-        let params = Pedersen::<G1Affine>::new_params(&mut rng, n);
+        let params = Pedersen::<G1Projective>::new_params(&mut rng, n);
 
         // init Prover's transcript
         let mut transcript_p: Transcript<Fr> = Transcript::<Fr>::new();
