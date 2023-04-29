@@ -1,31 +1,25 @@
-use ark_ec::AffineRepr;
-use ark_ec::{CurveGroup, Group};
-use ark_ff::{fields::Fp256, BigInteger, Field, PrimeField};
+use ark_ec::CurveGroup;
+use ark_ff::{Field, PrimeField};
 use ark_r1cs_std::{
     alloc::{AllocVar, AllocationMode},
-    bits::uint8::UInt8,
     boolean::Boolean,
     eq::EqGadget,
-    fields::{
-        fp::{AllocatedFp, FpVar},
-        nonnative::NonNativeFieldVar,
-        FieldVar,
-    },
-    groups::curves::short_weierstrass::ProjectiveVar,
+    fields::{fp::FpVar, nonnative::NonNativeFieldVar, FieldVar},
     groups::GroupOpsBounds,
     prelude::CurveVar,
-    ToBitsGadget, ToBytesGadget, ToConstraintFieldGadget,
+    ToBitsGadget,
+    ToConstraintFieldGadget,
+    // groups::curves::short_weierstrass::ProjectiveVar,
 };
 // use ark_r1cs_std::groups::curves::twisted_edwards::AffineVar;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
-use ark_std::ops::{Add, Mul, Sub};
 
-use ark_crypto_primitives::crh::poseidon::{
-    constraints::{CRHGadget, CRHParametersVar},
-    CRH,
-};
-use ark_crypto_primitives::crh::{CRHScheme, CRHSchemeGadget};
-use ark_crypto_primitives::snark::{FromFieldElementsGadget, SNARKGadget, SNARK};
+// use ark_crypto_primitives::crh::poseidon::{
+//     constraints::{CRHGadget, CRHParametersVar},
+//     CRH,
+// };
+// use ark_crypto_primitives::crh::{CRHScheme, CRHSchemeGadget};
+// use ark_crypto_primitives::snark::{FromFieldElementsGadget, SNARKGadget, SNARK};
 use ark_crypto_primitives::sponge::constraints::CryptographicSpongeVar;
 use ark_crypto_primitives::sponge::poseidon::{
     constraints::PoseidonSpongeVar, PoseidonConfig, PoseidonSponge,
@@ -74,7 +68,7 @@ where
             let cmW = GC::new_variable(cs.clone(), || Ok(val.borrow().cmW.0), mode)?;
 
             let x = NonNativeFieldVar::<C::ScalarField, ConstraintF<C>>::new_variable(
-                cs.clone(),
+                cs,
                 || Ok(val.borrow().x),
                 mode,
             )?;
@@ -108,20 +102,21 @@ where
         phi1: PhiVar<C, GC>,
         phi2: PhiVar<C, GC>,
         phi3: PhiVar<C, GC>,
-    ) -> Result<Boolean<ConstraintF<C>>, SynthesisError> {
+    ) -> Result<(), SynthesisError> {
         let r2 = r.square()?;
 
-        phi3.cmE.is_eq(
+        phi3.cmE.enforce_equal(
             &(phi1.cmE
                 + cmT.scalar_mul_le(r.to_bits_le()?.iter())?
                 + phi2.cmE.scalar_mul_le(r2.to_bits_le()?.iter())?),
         )?;
-        phi3.u.is_eq(&(phi1.u + r.clone() * phi2.u))?;
+        phi3.u.enforce_equal(&(phi1.u + r.clone() * phi2.u))?;
         phi3.cmW
-            .is_eq(&(phi1.cmW + phi2.cmW.scalar_mul_le(r.to_bits_le()?.iter())?))?;
+            .enforce_equal(&(phi1.cmW + phi2.cmW.scalar_mul_le(r.to_bits_le()?.iter())?))?;
 
         // wip x's check
-        phi3.x.is_eq(&(phi1.x + r.clone() * phi2.x))
+        phi3.x.enforce_equal(&(phi1.x + r * phi2.x))?;
+        Ok(())
     }
 }
 
@@ -173,8 +168,7 @@ where
             })?; // r will come from transcript
 
         // 1. phi.x == H(vk_nifs, i, z_0, z_i, phiBig)
-        let mut sponge =
-            PoseidonSpongeVar::<ConstraintF<C>>::new(cs.clone(), &self.poseidon_config);
+        let mut sponge = PoseidonSpongeVar::<ConstraintF<C>>::new(cs, &self.poseidon_config);
         let input = vec![i, z_0, z_i];
         sponge.absorb(&input)?;
         let input = vec![
@@ -186,12 +180,12 @@ where
         sponge.absorb(&input)?;
         let h = sponge.squeeze_field_elements(1).unwrap();
         let x_CF = phi.x.to_constraint_field()?; // phi.x on the ConstraintF<C>
-        x_CF[0].is_eq(&h[0])?; // review
+        x_CF[0].enforce_equal(&h[0])?; // review
 
         // // 2. phi.cmE==0, phi.u==1
         // <GC as CurveVar<C, ConstraintF<C>>>::is_zero(&phi.cmE)?;
-        phi.cmE.is_zero()?;
-        phi.u.is_one()?;
+        (phi.cmE.is_zero()?).enforce_equal(&Boolean::TRUE)?;
+        (phi.u.is_one()?).enforce_equal(&Boolean::TRUE)?;
 
         // 3. nifs.verify
         NIFSGadget::<C, GC>::verify(r, cmT, phi, phiBig, phiOut)?;
@@ -232,28 +226,24 @@ mod test {
 
     use crate::transcript::Transcript;
     use ark_relations::r1cs::ConstraintSystem;
-    use ark_std::{
-        rand::{Rng, RngCore},
-        UniformRand,
-    };
+    use ark_std::UniformRand;
 
     use crate::nifs;
     use crate::pedersen;
     use crate::transcript::poseidon_test_config;
-    use ark_ec::CurveGroup;
+    use ark_ec::Group;
     // use ark_ed_on_mnt4_298::{constraints::EdwardsVar, EdwardsProjective};
     use crate::pedersen::Commitment;
-    use ark_mnt4_298::{constraints::G1Var as MNT4G1Var, Fq, Fr, G1Projective as MNT4G1Projective};
+    // use ark_mnt4_298::{constraints::G1Var as MNT4G1Var, G1Projective as MNT4G1Projective}
+    use ark_mnt4_298::{Fq, Fr};
     use ark_mnt6_298::{constraints::G1Var as MNT6G1Var, G1Projective as MNT6G1Projective};
-    use ark_std::{One, Zero};
+    use ark_std::One;
 
     // mnt4's Fr is the Constraint Field,
     // while mnt4's Fq is the Field where we work, which is the C::ScalarField for C==MNT6G1
 
     #[test]
     fn test_phi_var() {
-        let mut rng = ark_std::test_rng();
-
         let phi = Phi::<MNT6G1Projective> {
             cmE: Commitment(MNT6G1Projective::generator()),
             u: Fq::one(),
@@ -262,7 +252,7 @@ mod test {
         };
 
         let cs = ConstraintSystem::<Fr>::new_ref();
-        let phiVar =
+        let _phiVar =
             PhiVar::<MNT6G1Projective, MNT6G1Var>::new_witness(cs.clone(), || Ok(phi)).unwrap();
         // println!("num_constraints={:?}", cs.num_constraints());
     }
@@ -275,17 +265,17 @@ mod test {
 
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        let (r1cs, w1, w2, _, x1, x2, _) = nifs::gen_test_values::<_, Fq>(&mut rng);
-        let (A, B, C) = (r1cs.A.clone(), r1cs.B.clone(), r1cs.C.clone());
+        let (r1cs, ws, _) = nifs::gen_test_values::<Fq>(2);
+        let (A, _, _) = (r1cs.A.clone(), r1cs.B.clone(), r1cs.C.clone());
 
         let r = Fq::rand(&mut rng); // this would come from the transcript
 
-        let fw1 = nifs::FWit::<MNT6G1Projective>::new(w1.clone(), A.len());
-        let fw2 = nifs::FWit::<MNT6G1Projective>::new(w2.clone(), A.len());
+        let fw1 = nifs::FWit::<MNT6G1Projective>::new(ws[0].clone(), A.len());
+        let fw2 = nifs::FWit::<MNT6G1Projective>::new(ws[1].clone(), A.len());
 
         let mut transcript_p = Transcript::<Fq, MNT6G1Projective>::new(&poseidon_config);
 
-        let (fw3, phi1, phi2, T, cmT) = nifs::NIFS::<MNT6G1Projective>::P(
+        let (_fw3, phi1, phi2, _T, cmT) = nifs::NIFS::<MNT6G1Projective>::P(
             &mut transcript_p,
             &pedersen_params,
             r,
@@ -305,9 +295,8 @@ mod test {
         let cmTVar = MNT6G1Var::new_witness(cs.clone(), || Ok(cmT.0)).unwrap();
         let rVar = NonNativeFieldVar::<Fq, Fr>::new_witness(cs.clone(), || Ok(r)).unwrap();
 
-        let valid = NIFSGadget::<MNT6G1Projective, MNT6G1Var>::verify(
-            rVar, cmTVar, phi1Var, phi2Var, phi3Var,
-        );
+        NIFSGadget::<MNT6G1Projective, MNT6G1Var>::verify(rVar, cmTVar, phi1Var, phi2Var, phi3Var)
+            .unwrap();
         // println!("num_constraints={:?}", cs.num_constraints());
     }
 }

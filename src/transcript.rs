@@ -1,6 +1,5 @@
-use ark_ec::{AffineRepr, CurveGroup, Group};
+use ark_ec::{AffineRepr, CurveGroup};
 use ark_ff::PrimeField;
-use ark_serialize::CanonicalSerialize;
 use std::marker::PhantomData;
 
 use ark_r1cs_std::fields::fp::FpVar;
@@ -12,8 +11,6 @@ use ark_crypto_primitives::sponge::{
     constraints::CryptographicSpongeVar, Absorb, CryptographicSponge,
 };
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
-
-use ark_poly::DenseUVPolynomial;
 
 pub struct Transcript<F: PrimeField + Absorb, C: CurveGroup>
 where
@@ -28,7 +25,7 @@ where
     <C as CurveGroup>::BaseField: Absorb,
 {
     pub fn new(poseidon_config: &PoseidonConfig<F>) -> Self {
-        let mut sponge = PoseidonSponge::<F>::new(&poseidon_config);
+        let sponge = PoseidonSponge::<F>::new(poseidon_config);
         Transcript {
             sponge,
             _c: PhantomData,
@@ -62,8 +59,8 @@ pub struct TranscriptVar<F: PrimeField> {
     sponge: PoseidonSpongeVar<F>,
 }
 impl<F: PrimeField> TranscriptVar<F> {
-    pub fn new(cs: ConstraintSystemRef<F>, poseidon_config: PoseidonConfig<F>) -> Self {
-        let mut sponge = PoseidonSpongeVar::<F>::new(cs.clone(), &poseidon_config);
+    pub fn new(cs: ConstraintSystemRef<F>, poseidon_config: &PoseidonConfig<F>) -> Self {
+        let sponge = PoseidonSpongeVar::<F>::new(cs, poseidon_config);
         Self { sponge }
     }
     pub fn add(&mut self, v: FpVar<F>) -> Result<(), SynthesisError> {
@@ -71,12 +68,12 @@ impl<F: PrimeField> TranscriptVar<F> {
     }
     pub fn get_challenge(&mut self) -> Result<FpVar<F>, SynthesisError> {
         let c = self.sponge.squeeze_field_elements(1)?;
-        self.sponge.absorb(&c[0]);
+        self.sponge.absorb(&c[0])?;
         Ok(c[0].clone())
     }
     pub fn get_challenge_vec(&mut self, n: usize) -> Result<Vec<FpVar<F>>, SynthesisError> {
         let c = self.sponge.squeeze_field_elements(n)?;
-        self.sponge.absorb(&c);
+        self.sponge.absorb(&c)?;
         Ok(c)
     }
 }
@@ -109,17 +106,26 @@ pub fn poseidon_test_config<F: PrimeField>() -> PoseidonConfig<F> {
     )
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use ark_mnt4_298::{Fr, G1Projective}; // scalar field
-//     use ark_std::{One, Zero};
-//
-//     #[test]
-//     fn test_poseidon() {
-//         let config = poseidon_test_config::<Fr>();
-//         let mut tr = Transcript::<Fr, G1Projective>::new(&config);
-//         tr.add(&Fr::one());
-//         println!("c {:?}", tr.get_challenge().to_string());
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ark_mnt4_298::{Fr, G1Projective}; // scalar field
+    use ark_r1cs_std::{alloc::AllocVar, fields::fp::FpVar, R1CSVar};
+    use ark_relations::r1cs::ConstraintSystem;
+
+    #[test]
+    fn test_transcript_and_transcriptvar() {
+        let config = poseidon_test_config::<Fr>();
+        let mut tr = Transcript::<Fr, G1Projective>::new(&config);
+        tr.add(&Fr::from(42_u32));
+        let c = tr.get_challenge();
+
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        let mut tr_var = TranscriptVar::<Fr>::new(cs.clone(), &config);
+        let v = FpVar::<Fr>::new_witness(cs.clone(), || Ok(Fr::from(42_u32))).unwrap();
+        tr_var.add(v).unwrap();
+        let c_var = tr_var.get_challenge().unwrap();
+
+        assert_eq!(c, c_var.value().unwrap());
+    }
+}

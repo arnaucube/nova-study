@@ -1,19 +1,14 @@
 // this file contains a sum-check protocol initial implementation, not used by the rest of the repo
 // but implemented as an exercise and it will probably be used in the future.
 
-use ark_ec::{CurveGroup, Group};
+use ark_ec::CurveGroup;
 use ark_ff::{BigInteger, PrimeField};
 use ark_poly::{
     multivariate::{SparsePolynomial, SparseTerm, Term},
-    univariate::DensePolynomial,
-    DenseMVPolynomial, DenseUVPolynomial, EvaluationDomain, GeneralEvaluationDomain, Polynomial,
-    SparseMultilinearExtension,
+    DenseMVPolynomial, DenseUVPolynomial, Polynomial,
 };
-use ark_std::cfg_into_iter;
 use ark_std::log2;
 use ark_std::marker::PhantomData;
-use ark_std::ops::Mul;
-use ark_std::{rand::Rng, UniformRand};
 
 use ark_crypto_primitives::sponge::{poseidon::PoseidonConfig, Absorb};
 
@@ -61,7 +56,7 @@ where
                             new_term = vec![];
                             break;
                         } else {
-                            new_coef = new_coef * v.pow([(*power) as u64]);
+                            new_coef *= v.pow([(*power) as u64]);
                         }
                     }
                     _ => {
@@ -119,7 +114,7 @@ where
         }
         for i in 0..n_vars {
             let k = F::from(iter_num as u64).into_bigint().to_bytes_le();
-            let bit = k[(i / 8) as usize] & (1 << (i % 8));
+            let bit = k[i / 8] & (1 << (i % 8));
             if bit == 0 {
                 p[none_pos + i] = Some(F::zero());
             } else {
@@ -143,7 +138,7 @@ where
         for i in 0..(2_u64.pow(v as u32) as usize) {
             let p = Self::point_complete(vec![], v, i);
 
-            H = H + g.evaluate(&p.into());
+            H += g.evaluate(&p.into());
         }
         transcript.add(&H);
 
@@ -210,6 +205,12 @@ mod tests {
     use super::*;
     use crate::transcript::poseidon_test_config;
     use ark_mnt4_298::{Fr, G1Projective}; // scalar field
+    use ark_poly::{
+        multivariate::{SparsePolynomial, SparseTerm, Term},
+        univariate::DensePolynomial,
+        DenseMVPolynomial, DenseUVPolynomial,
+    };
+    use ark_std::{rand::Rng, UniformRand};
 
     #[test]
     fn test_new_point() {
@@ -286,7 +287,6 @@ mod tests {
 
     #[test]
     fn test_flow_hardcoded_values() {
-        let mut rng = ark_std::test_rng();
         // g(X_0, X_1, X_2) = 2 X_0^3 + X_0 X_2 + X_1 X_2
         let terms = vec![
             (Fr::from(2u32), SparseTerm::new(vec![(0_usize, 3)])),

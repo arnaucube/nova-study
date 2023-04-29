@@ -1,4 +1,3 @@
-use ark_ec::AffineRepr;
 use ark_ec::{CurveGroup, Group};
 use ark_std::{
     rand::{Rng, RngCore},
@@ -10,7 +9,6 @@ use crate::utils::{naive_msm, vec_add, vector_elem_product};
 
 use crate::transcript::Transcript;
 use ark_crypto_primitives::sponge::Absorb;
-use ark_ff::PrimeField;
 
 pub struct Proof_elem<C: CurveGroup> {
     R: C,
@@ -60,7 +58,7 @@ where
         v: &C::ScalarField,
     ) -> CommitmentElem<C> {
         let r = C::ScalarField::rand(rng);
-        let cm: C = (params.g.mul(v) + params.h.mul(r));
+        let cm: C = params.g.mul(v) + params.h.mul(r);
         CommitmentElem::<C> { cm, r }
     }
     pub fn commit(
@@ -82,7 +80,7 @@ where
         let r1 = transcript.get_challenge();
         let r2 = transcript.get_challenge();
 
-        let R: C = (params.g.mul(r1) + params.h.mul(r2));
+        let R: C = params.g.mul(r1) + params.h.mul(r2);
 
         transcript.add_point(&cm);
         transcript.add_point(&R);
@@ -109,7 +107,7 @@ where
         transcript.add_point(&R);
         let e = transcript.get_challenge();
 
-        let u_ = vec_add(&vector_elem_product(&v, &e), &d);
+        let u_ = vec_add(&vector_elem_product(v, &e), &d);
         let ru_ = e * r + r1;
 
         Proof::<C> { R, u_, ru_ }
@@ -183,9 +181,7 @@ where
 mod tests {
     use super::*;
     use crate::transcript::poseidon_test_config;
-    use ark_ec::CurveGroup;
     use ark_mnt4_298::{Fr, G1Projective};
-    use std::ops::Mul;
 
     #[test]
     fn test_pedersen_single_element() {

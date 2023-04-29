@@ -1,4 +1,3 @@
-use ark_ec::AffineRepr;
 use ark_ec::CurveGroup;
 use ark_ff::fields::PrimeField;
 use core::ops::{Add, Sub};
@@ -12,7 +11,9 @@ pub fn vector_elem_product<F: PrimeField>(a: &Vec<F>, e: &F) -> Vec<F> {
     }
     r
 }
-pub fn matrix_vector_product<F: PrimeField>(M: &Vec<Vec<F>>, z: &Vec<F>) -> Vec<F> {
+
+#[allow(clippy::needless_range_loop)]
+pub fn matrix_vector_product<F: PrimeField>(M: &Vec<Vec<F>>, z: &[F]) -> Vec<F> {
     // TODO assert len
     let mut r: Vec<F> = vec![F::zero(); M.len()];
     for i in 0..M.len() {
@@ -37,7 +38,7 @@ pub fn hadamard_product<F: PrimeField>(a: Vec<F>, b: Vec<F>) -> Vec<F> {
 //     vec_add(a, vector_elem_product(&b, &r)) // WIP probably group loops
 // }
 
-pub fn naive_msm<C: CurveGroup>(s: &Vec<C::ScalarField>, p: &Vec<C>) -> C {
+pub fn naive_msm<C: CurveGroup>(s: &Vec<C::ScalarField>, p: &[C]) -> C {
     // TODO check lengths, or at least check s.len()>= p.len()
 
     let mut r = p[0].mul(s[0]);
@@ -47,7 +48,7 @@ pub fn naive_msm<C: CurveGroup>(s: &Vec<C::ScalarField>, p: &Vec<C>) -> C {
     r
 }
 
-pub fn vec_add<F: PrimeField>(a: &Vec<F>, b: &Vec<F>) -> Vec<F> {
+pub fn vec_add<F: PrimeField>(a: &Vec<F>, b: &[F]) -> Vec<F> {
     let mut r: Vec<F> = vec![F::zero(); a.len()];
     for i in 0..a.len() {
         r[i] = a[i] + b[i];
@@ -83,7 +84,7 @@ impl<F: PrimeField> Add<Ve<F>> for Ve<F> {
     type Output = Ve<F>;
     fn add(self, rhs_vec: Self) -> Ve<F> {
         let lhs = self.0.clone();
-        let rhs = rhs_vec.0.clone();
+        let rhs = rhs_vec.0;
         let mut r: Vec<F> = vec![F::zero(); lhs.len()];
         for i in 0..self.0.len() {
             r[i] = lhs[i] + rhs[i];
@@ -95,7 +96,7 @@ impl<F: PrimeField> Sub<Ve<F>> for Ve<F> {
     type Output = Ve<F>;
     fn sub(self, rhs_vec: Self) -> Ve<F> {
         let lhs = self.0.clone();
-        let rhs = rhs_vec.0.clone();
+        let rhs = rhs_vec.0;
         let mut r: Vec<F> = vec![F::zero(); lhs.len()];
         for i in 0..self.0.len() {
             r[i] = lhs[i] - rhs[i];
@@ -125,10 +126,7 @@ pub fn to_F_vec<F: PrimeField>(z: Vec<usize>) -> Vec<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_ec::CurveGroup;
-    use ark_mnt4_298::{g1::G1Affine, Fr};
-    use ark_std::{One, Zero};
-    use std::ops::Mul;
+    use ark_mnt4_298::Fr;
 
     #[test]
     fn test_matrix_vector_product() {

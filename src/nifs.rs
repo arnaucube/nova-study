@@ -1,10 +1,6 @@
 // use ark_ec::AffineRepr;
 use ark_ec::{CurveGroup, Group};
 use ark_ff::fields::PrimeField;
-use ark_std::{
-    rand::{Rng, RngCore},
-    UniformRand,
-};
 use ark_std::{One, Zero};
 use std::marker::PhantomData;
 
@@ -50,13 +46,13 @@ where
         }
     }
     pub fn commit(&self, params: &PedersenParams<C>) -> Phi<C> {
-        let cmE = Pedersen::commit(&params, &self.E, &self.rE);
-        let cmW = Pedersen::commit(&params, &self.W, &self.rW);
+        let cmE = Pedersen::commit(params, &self.E, &self.rE);
+        let cmW = Pedersen::commit(params, &self.W, &self.rW);
         Phi {
             cmE,
             u: C::ScalarField::one(),
             cmW,
-            x: self.W[0].clone(), // TODO WIP review
+            x: self.W[0], // TODO WIP review
         }
     }
 }
@@ -75,18 +71,18 @@ where
         r1cs: &R1CS<C::ScalarField>,
         u1: C::ScalarField,
         u2: C::ScalarField,
-        z1: &Vec<C::ScalarField>,
-        z2: &Vec<C::ScalarField>,
+        z1: &[C::ScalarField],
+        z2: &[C::ScalarField],
     ) -> Vec<C::ScalarField> {
         let (A, B, C) = (r1cs.A.clone(), r1cs.B.clone(), r1cs.C.clone());
 
         // this is parallelizable (for the future)
-        let Az1 = matrix_vector_product(&A, &z1);
-        let Bz1 = matrix_vector_product(&B, &z1);
-        let Cz1 = matrix_vector_product(&C, &z1);
-        let Az2 = matrix_vector_product(&A, &z2);
-        let Bz2 = matrix_vector_product(&B, &z2);
-        let Cz2 = matrix_vector_product(&C, &z2);
+        let Az1 = matrix_vector_product(&A, z1);
+        let Bz1 = matrix_vector_product(&B, z1);
+        let Cz1 = matrix_vector_product(&C, z1);
+        let Az2 = matrix_vector_product(&A, z2);
+        let Bz2 = matrix_vector_product(&B, z2);
+        let Cz2 = matrix_vector_product(&C, z2);
 
         let Az1_Bz2 = hadamard_product(Az1, Bz2);
         let Az2_Bz1 = hadamard_product(Az2, Bz1);
@@ -109,18 +105,13 @@ where
         let E: Vec<C::ScalarField> = vec_add(
             // this syntax will be simplified with future operators impl (or at least a method
             // for r-lin)
-            &vec_add(&fw1.E, &vector_elem_product(&T, &r)),
+            &vec_add(&fw1.E, &vector_elem_product(T, &r)),
             &vector_elem_product(&fw2.E, &r2),
         );
         let rE = fw1.rE + r * rT + r2 * fw2.rE;
         let W = vec_add(&fw1.W, &vector_elem_product(&fw2.W, &r));
         let rW = fw1.rW + r * fw2.rW;
-        FWit::<C> {
-            E: E.into(),
-            rE,
-            W: W.into(),
-            rW,
-        }
+        FWit::<C> { E, rE, W, rW }
     }
 
     pub fn fold_instance(
@@ -146,6 +137,7 @@ where
     }
 
     // NIFS.P
+    #[allow(clippy::type_complexity)]
     pub fn P(
         tr: &mut Transcript<C::ScalarField, C>,
         pedersen_params: &PedersenParams<C>,
@@ -155,25 +147,25 @@ where
         fw2: FWit<C>,
     ) -> (FWit<C>, Phi<C>, Phi<C>, Vec<C::ScalarField>, Commitment<C>) {
         // compute committed instances
-        let phi1 = fw1.commit(&pedersen_params); // wip
-        let phi2 = fw2.commit(&pedersen_params);
+        let phi1 = fw1.commit(pedersen_params); // wip
+        let phi2 = fw2.commit(pedersen_params);
 
         // compute cross terms
-        let T = Self::comp_T(&r1cs, phi1.u, phi2.u, &fw1.W, &fw2.W);
+        let T = Self::comp_T(r1cs, phi1.u, phi2.u, &fw1.W, &fw2.W);
         let rT = tr.get_challenge(); // r_T
-        let cmT = Pedersen::commit(&pedersen_params, &T, &rT);
+        let cmT = Pedersen::commit(pedersen_params, &T, &rT);
 
         // fold witness
         let fw3 = NIFS::<C>::fold_witness(r, &fw1, &fw2, &T, rT);
 
         // fold committed instancs
         // let phi3 = NIFS::<C>::fold_instance(r, &phi1, &phi2, &cmT);
-        return (fw3, phi1, phi2, T, cmT); // maybe return phi3
+        (fw3, phi1, phi2, T, cmT) // maybe return phi3
     }
 
     // NIFS.V
     pub fn V(r: C::ScalarField, phi1: &Phi<C>, phi2: &Phi<C>, cmT: &Commitment<C>) -> Phi<C> {
-        NIFS::<C>::fold_instance(r, &phi1, &phi2, &cmT)
+        NIFS::<C>::fold_instance(r, phi1, phi2, cmT)
     }
 
     // verify commited folded instance (phi) relations
@@ -210,9 +202,9 @@ where
         rT: C::ScalarField,
         cmT: &Commitment<C>,
     ) -> (PedersenProof<C>, PedersenProof<C>, PedersenProof<C>) {
-        let cmE_proof = Pedersen::prove(&pedersen_params, tr, &phi.cmE, &fw.E, &fw.rE);
-        let cmW_proof = Pedersen::prove(&pedersen_params, tr, &phi.cmW, &fw.W, &fw.rW);
-        let cmT_proof = Pedersen::prove(&pedersen_params, tr, &cmT, &T, &rT);
+        let cmE_proof = Pedersen::prove(pedersen_params, tr, &phi.cmE, &fw.E, &fw.rE);
+        let cmW_proof = Pedersen::prove(pedersen_params, tr, &phi.cmW, &fw.W, &fw.rW);
+        let cmT_proof = Pedersen::prove(pedersen_params, tr, cmT, &T, &rT);
         (cmE_proof, cmW_proof, cmT_proof)
     }
     pub fn verify_commitments(
@@ -224,13 +216,13 @@ where
         cmW_proof: PedersenProof<C>,
         cmT_proof: PedersenProof<C>,
     ) -> bool {
-        if !Pedersen::verify(&pedersen_params, tr, phi.cmE, cmE_proof) {
+        if !Pedersen::verify(pedersen_params, tr, phi.cmE, cmE_proof) {
             return false;
         }
-        if !Pedersen::verify(&pedersen_params, tr, phi.cmW, cmW_proof) {
+        if !Pedersen::verify(pedersen_params, tr, phi.cmW, cmW_proof) {
             return false;
         }
-        if !Pedersen::verify(&pedersen_params, tr, cmT, cmT_proof) {
+        if !Pedersen::verify(pedersen_params, tr, cmT, cmT_proof) {
             return false;
         }
         true
@@ -238,9 +230,7 @@ where
 }
 
 // only for tests across different files
-pub fn gen_test_values<R: Rng, F: PrimeField>(
-    rng: &mut R,
-) -> (R1CS<F>, Vec<F>, Vec<F>, Vec<F>, Vec<F>, Vec<F>, Vec<F>) {
+pub fn gen_test_values<F: PrimeField>(n: usize) -> (R1CS<F>, Vec<Vec<F>>, Vec<Vec<F>>) {
     // R1CS for: x^3 + x + 5 = y (example from article
     // https://www.vitalik.ca/general/2016/12/10/qap.html )
     let A = to_F_matrix::<F>(vec![
@@ -261,21 +251,27 @@ pub fn gen_test_values<R: Rng, F: PrimeField>(
         vec![0, 0, 0, 0, 0, 1],
         vec![0, 0, 1, 0, 0, 0],
     ]);
-    // TODO in the future update this method to generate witness, and generate n witnesses
-    // instances, x: pub
-    let w1 = to_F_vec::<F>(vec![1, 3, 35, 9, 27, 30]);
-    let x1 = to_F_vec::<F>(vec![35]);
-    let w2 = to_F_vec::<F>(vec![1, 4, 73, 16, 64, 68]);
-    let x2 = to_F_vec::<F>(vec![73]);
-    let w3 = to_F_vec::<F>(vec![1, 5, 135, 25, 125, 130]);
-    let x3 = to_F_vec::<F>(vec![135]);
 
-    let r1cs = R1CS::<F> {
-        A: A.clone(),
-        B: B.clone(),
-        C: C.clone(),
-    };
-    (r1cs, w1, w2, w3, x1, x2, x3)
+    // generate n witnesses
+    let mut w: Vec<Vec<F>> = Vec::new();
+    let mut x: Vec<Vec<F>> = Vec::new();
+    for i in 0..n {
+        let input = 3 + i;
+        let w_i = to_F_vec::<F>(vec![
+            1,
+            input,
+            input * input * input + input + 5, // x^3 + x + 5
+            input * input,                     // x^2
+            input * input * input,             // x^2 * x
+            input * input * input + input,     // x^3 + x
+        ]);
+        w.push(w_i.clone());
+        let x_i = to_F_vec::<F>(vec![input * input * input + input + 5]);
+        x.push(x_i.clone());
+    }
+
+    let r1cs = R1CS::<F> { A, B, C };
+    (r1cs, w, x)
 }
 
 #[cfg(test)]
@@ -283,14 +279,9 @@ mod tests {
     use super::*;
     use crate::pedersen::Pedersen;
     use crate::transcript::poseidon_test_config;
-    use ark_ec::CurveGroup;
     use ark_mnt4_298::{Fr, G1Projective};
-    use ark_std::{
-        rand::{Rng, RngCore},
-        UniformRand,
-    };
-    use ark_std::{One, Zero};
-    use std::ops::Mul;
+    use ark_std::One;
+    use ark_std::UniformRand;
 
     // fold 2 instances into one
     #[test]
@@ -299,19 +290,19 @@ mod tests {
         let pedersen_params = Pedersen::<G1Projective>::new_params(&mut rng, 100); // 100 is wip, will get it from actual vec
         let poseidon_config = poseidon_test_config::<Fr>();
 
-        let (r1cs, w1, w2, _, x1, x2, _) = gen_test_values(&mut rng);
+        let (r1cs, ws, _) = gen_test_values(2);
         let (A, B, C) = (r1cs.A.clone(), r1cs.B.clone(), r1cs.C.clone());
 
         let r = Fr::rand(&mut rng); // this would come from the transcript
 
-        let fw1 = FWit::<G1Projective>::new(w1.clone(), A.len());
-        let fw2 = FWit::<G1Projective>::new(w2.clone(), A.len());
+        let fw1 = FWit::<G1Projective>::new(ws[0].clone(), A.len());
+        let fw2 = FWit::<G1Projective>::new(ws[1].clone(), A.len());
 
         // get committed instances
         let phi1 = fw1.commit(&pedersen_params); // wip
         let phi2 = fw2.commit(&pedersen_params);
 
-        let T = NIFS::<G1Projective>::comp_T(&r1cs, phi1.u, phi2.u, &w1, &w2);
+        let T = NIFS::<G1Projective>::comp_T(&r1cs, phi1.u, phi2.u, &ws[0], &ws[1]);
         let rT: Fr = Fr::rand(&mut rng);
         let cmT = Pedersen::commit(&pedersen_params, &T, &rT);
 
@@ -363,6 +354,7 @@ mod tests {
             cmW_proof,
             cmT_proof,
         );
+        assert!(v);
     }
 
     // fold i_1, i_2 instances into i_12, and then i_12, i_3 into i_123
@@ -372,19 +364,19 @@ mod tests {
         let pedersen_params = Pedersen::<G1Projective>::new_params(&mut rng, 6);
         let poseidon_config = poseidon_test_config::<Fr>();
 
-        let (r1cs, w1, w2, w3, x1, x2, x3) = gen_test_values(&mut rng);
+        let (r1cs, ws, _) = gen_test_values(3);
 
         let u1: Fr = Fr::one();
         let u2: Fr = Fr::one();
 
-        let T_12 = NIFS::<G1Projective>::comp_T(&r1cs, u1, u2, &w1, &w2);
+        let T_12 = NIFS::<G1Projective>::comp_T(&r1cs, u1, u2, &ws[0], &ws[1]);
         let rT_12: Fr = Fr::rand(&mut rng);
         let cmT_12 = Pedersen::commit(&pedersen_params, &T_12, &rT_12);
 
         let r = Fr::rand(&mut rng); // this would come from the transcript
 
-        let fw1 = FWit::<G1Projective>::new(w1, T_12.len());
-        let fw2 = FWit::<G1Projective>::new(w2, T_12.len());
+        let fw1 = FWit::<G1Projective>::new(ws[0].clone(), T_12.len());
+        let fw2 = FWit::<G1Projective>::new(ws[1].clone(), T_12.len());
 
         // fold witness
         let fw_12 = NIFS::<G1Projective>::fold_witness(r, &fw1, &fw2, &T_12, rT_12);
@@ -403,7 +395,7 @@ mod tests {
 
         //----
         // 2nd fold
-        let fw3 = FWit::<G1Projective>::new(w3, r1cs.A.len());
+        let fw3 = FWit::<G1Projective>::new(ws[2].clone(), r1cs.A.len());
 
         // compute cross terms
         let T_123 = NIFS::<G1Projective>::comp_T(&r1cs, phi_12.u, Fr::one(), &fw_12.W, &fw3.W);
@@ -477,23 +469,23 @@ mod tests {
         let pedersen_params = Pedersen::<G1Projective>::new_params(&mut rng, 100); // 100 is wip, will get it from actual vec
         let poseidon_config = poseidon_test_config::<Fr>();
 
-        let (r1cs, w1, w2, _, x1, x2, _) = gen_test_values(&mut rng);
-        let (A, B, C) = (r1cs.A.clone(), r1cs.B.clone(), r1cs.C.clone());
+        let (r1cs, ws, _) = gen_test_values(3);
+        let (A, _, _) = (r1cs.A.clone(), r1cs.B.clone(), r1cs.C.clone());
 
         let r = Fr::rand(&mut rng); // this would come from the transcript
 
-        let fw1 = FWit::<G1Projective>::new(w1.clone(), A.len());
-        let fw2 = FWit::<G1Projective>::new(w2.clone(), A.len());
+        let fw1 = FWit::<G1Projective>::new(ws[0].clone(), A.len());
+        let fw2 = FWit::<G1Projective>::new(ws[1].clone(), A.len());
 
         // init Prover's transcript
         let mut transcript_p = Transcript::<Fr, G1Projective>::new(&poseidon_config);
 
         // NIFS.P
-        let (fw3, phi1, phi2, T, cmT) =
+        let (_fw3, phi1, phi2, _T, cmT) =
             NIFS::<G1Projective>::P(&mut transcript_p, &pedersen_params, r, &r1cs, fw1, fw2);
 
         // init Verifier's transcript
-        let mut transcript_v = Transcript::<Fr, G1Projective>::new(&poseidon_config);
+        // let mut transcript_v = Transcript::<Fr, G1Projective>::new(&poseidon_config);
 
         // NIFS.V
         let phi3 = NIFS::<G1Projective>::V(r, &phi1, &phi2, &cmT);
