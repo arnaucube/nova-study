@@ -1,5 +1,5 @@
-// Sum-check protocol initial implementation, not used by the rest of the repo but implemented as
-// an exercise and it will probably be used in the future.
+// this file contains a sum-check protocol initial implementation, not used by the rest of the repo
+// but implemented as an exercise and it will probably be used in the future.
 
 use ark_ff::{BigInteger, PrimeField};
 use ark_poly::{
@@ -200,7 +200,7 @@ impl<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_bn254::Fr; // scalar field
+    use ark_mnt4_298::Fr; // scalar field
 
     #[test]
     fn test_new_point() {
