@@ -15,7 +15,7 @@ ark-serialize = { version = "0.4.0", default-features = false, features = [ "der
 rand = { version = "0.8", features = [ "std", "std_rng" ] }
 merlin = { version = "3.0.0" }
 
-ark-crypto-primitives = { version = "^0.4.0", default-features = false, features = [ "r1cs", "snark"] }
+ark-crypto-primitives = { version = "^0.4.0", default-features = false, features = [ "r1cs", "snark", "sponge", "crh" ] }
 ark-r1cs-std = { version = "^0.4.0", default-features = false }
 ark-relations = { version = "^0.4.0", default-features = false }
 ark-snark = { version = "^0.4.0", default-features = false }

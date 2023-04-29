@@ -1,7 +1,6 @@
-use ark_crypto_primitives::snark::{FromFieldElementsGadget, SNARKGadget, SNARK};
 use ark_ec::AffineRepr;
 use ark_ec::{CurveGroup, Group};
-use ark_ff::{fields::Fp256, Field, PrimeField};
+use ark_ff::{fields::Fp256, BigInteger, Field, PrimeField};
 use ark_r1cs_std::{
     alloc::{AllocVar, AllocationMode},
     bits::uint8::UInt8,
@@ -17,8 +16,20 @@ use ark_r1cs_std::{
     prelude::CurveVar,
     ToBitsGadget, ToBytesGadget, ToConstraintFieldGadget,
 };
+// use ark_r1cs_std::groups::curves::twisted_edwards::AffineVar;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
-use ark_std::ops::Mul;
+use ark_std::ops::{Add, Mul, Sub};
+
+use ark_crypto_primitives::crh::poseidon::{
+    constraints::{CRHGadget, CRHParametersVar},
+    CRH,
+};
+use ark_crypto_primitives::crh::{CRHScheme, CRHSchemeGadget};
+use ark_crypto_primitives::snark::{FromFieldElementsGadget, SNARKGadget, SNARK};
+use ark_crypto_primitives::sponge::constraints::CryptographicSpongeVar;
+use ark_crypto_primitives::sponge::poseidon::{
+    constraints::PoseidonSpongeVar, PoseidonConfig, PoseidonSponge,
+};
 
 use core::{borrow::Borrow, marker::PhantomData};
 use derivative::Derivative;
@@ -114,33 +125,106 @@ where
     }
 }
 
-////
-
-pub trait Config<Fq: PrimeField, Fr: PrimeField> {
-    type AugmentedFunctionCircuit: SNARK<Fq>; // F'
-    type FunctionCircuit: ConstraintSynthesizer<Fq>; // F
-    type DummyStepCircuit: SNARK<Fr>;
-}
-
-pub struct AugmentedFCircuit<
-    Fq: PrimeField,
-    Fr: PrimeField,
-    C: CurveGroup,
-    GC: CurveVar<C, Fq>,
-    Cfg: Config<Fq, Fr>,
-> {
-    pub dummystep_vk: Option<<Cfg::DummyStepCircuit as SNARK<Fr>>::VerifyingKey>,
+use ark_crypto_primitives::sponge::Absorb;
+pub struct AugmentedFCircuit<C: CurveGroup, GC: CurveVar<C, ConstraintF<C>>>
+where
+    <<C as CurveGroup>::BaseField as Field>::BasePrimeField: Absorb,
+{
     _c: PhantomData<C>,
     _gc: PhantomData<GC>,
+
+    pub poseidon_native: PoseidonSponge<ConstraintF<C>>,
+    pub poseidon_config: PoseidonConfig<ConstraintF<C>>,
+    pub i: Option<C::BaseField>,
+    pub z_0: Option<C::BaseField>,
+    pub z_i: Option<C::BaseField>,
+    pub phi: Option<Phi<C>>, // phi in the paper sometimes appears as phi (φ) and others as 𝗎
+    pub phiBig: Option<Phi<C>>,
+    pub phiOut: Option<Phi<C>>,
+    pub cmT: Option<C>,
+    pub r: Option<C::ScalarField>, // This will not be an input and derived from a hash internally in the circuit (poseidon transcript)
 }
 
-impl<Fq: PrimeField, Fr: PrimeField, C: CurveGroup, GC: CurveVar<C, Fq>, Cfg: Config<Fq, Fr>>
-    ConstraintSynthesizer<Fq> for AugmentedFCircuit<Fq, Fr, C, GC, Cfg>
+impl<C: CurveGroup, GC: CurveVar<C, ConstraintF<C>>> ConstraintSynthesizer<ConstraintF<C>>
+    for AugmentedFCircuit<C, GC>
+where
+    C: CurveGroup,
+    GC: CurveVar<C, ConstraintF<C>>,
+    for<'a> &'a GC: GroupOpsBounds<'a, C, GC>,
+    <C as CurveGroup>::BaseField: PrimeField,
+    <<C as CurveGroup>::BaseField as Field>::BasePrimeField: Absorb,
 {
-    fn generate_constraints(self, cs: ConstraintSystemRef<Fq>) -> Result<(), SynthesisError> {
-        unimplemented!();
+    fn generate_constraints(
+        self,
+        cs: ConstraintSystemRef<ConstraintF<C>>,
+    ) -> Result<(), SynthesisError> {
+        let i = FpVar::<ConstraintF<C>>::new_witness(cs.clone(), || Ok(self.i.unwrap()))?;
+        let z_0 = FpVar::<ConstraintF<C>>::new_witness(cs.clone(), || Ok(self.z_0.unwrap()))?;
+        let z_i = FpVar::<ConstraintF<C>>::new_witness(cs.clone(), || Ok(self.z_i.unwrap()))?;
+
+        let phi = PhiVar::<C, GC>::new_witness(cs.clone(), || Ok(self.phi.unwrap()))?;
+        let phiBig = PhiVar::<C, GC>::new_witness(cs.clone(), || Ok(self.phiBig.unwrap()))?;
+        let phiOut = PhiVar::<C, GC>::new_witness(cs.clone(), || Ok(self.phiOut.unwrap()))?;
+
+        let cmT = GC::new_witness(cs.clone(), || Ok(self.cmT.unwrap()))?;
+        let r =
+            NonNativeFieldVar::<C::ScalarField, ConstraintF<C>>::new_witness(cs.clone(), || {
+                Ok(self.r.unwrap())
+            })?; // r will come from transcript
+
+        // 1. phi.x == H(vk_nifs, i, z_0, z_i, phiBig)
+        let mut sponge =
+            PoseidonSpongeVar::<ConstraintF<C>>::new(cs.clone(), &self.poseidon_config);
+        let input = vec![i, z_0, z_i];
+        sponge.absorb(&input)?;
+        let input = vec![
+            phiBig.u.to_constraint_field()?,
+            phiBig.x.to_constraint_field()?,
+        ];
+        sponge.absorb(&input)?;
+        let input = vec![phiBig.cmE.to_bytes()?, phiBig.cmW.to_bytes()?];
+        sponge.absorb(&input)?;
+        let h = sponge.squeeze_field_elements(1).unwrap();
+        let x_CF = phi.x.to_constraint_field()?; // phi.x on the ConstraintF<C>
+        x_CF[0].is_eq(&h[0])?; // review
+
+        // // 2. phi.cmE==0, phi.u==1
+        // <GC as CurveVar<C, ConstraintF<C>>>::is_zero(&phi.cmE)?;
+        phi.cmE.is_zero()?;
+        phi.u.is_one()?;
+
+        // 3. nifs.verify
+        NIFSGadget::<C, GC>::verify(r, cmT, phi, phiBig, phiOut)?;
+
+        // 4. zksnark.V(vk_snark, phi_new, proof_phi)
+
+        Ok(())
     }
 }
+
+//////////
+
+// pub struct Nova<MainField: PrimeField, SecondField: PrimeField, C1: CurveGroup, C2: CurveGroup> {}
+// pub trait SNARKs<MainField: PrimeField, SecondField: PrimeField> {
+//     type AugmentedFunctionSNARK: SNARK<MainField>;
+//     // type FunctionSNARK: ConstraintSynthesizer<Fr>; // F
+//     type DummyStepSNARK: SNARK<SecondField>;
+//
+//     type AugmentedFunctionCircuit: SNARKGadget<MainField, SecondField, Self::AugmentedFunctionSNARK>; // F'
+//     type FunctionCircuit: ConstraintSynthesizer<MainField>; // F
+//     type DummyStepCircuit: SNARKGadget<SecondField, MainField, Self::DummyStepSNARK>;
+// }
+// pub struct TS<
+//     MainField: PrimeField,
+//     SecondField: PrimeField,
+//     Config: SNARKs<MainField, SecondField>,
+// > {
+//     augmentedF_pk: <Config::AugmentedFunctionSNARK as SNARK<MainField>>::ProvingKey,
+//     augmentedF_vk: <Config::AugmentedFunctionSNARK as SNARK<MainField>>::VerifyingKey,
+//
+//     dummy_pk: <Config::DummyStepSNARK as SNARK<SecondField>>::ProvingKey,
+//     dummy_vk: <Config::DummyStepSNARK as SNARK<SecondField>>::VerifyingKey,
+// }
 
 #[cfg(test)]
 mod test {
