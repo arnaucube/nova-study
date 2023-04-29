@@ -239,6 +239,7 @@ mod test {
 
     use crate::nifs;
     use crate::pedersen;
+    use crate::transcript::poseidon_test_config;
     use ark_ec::CurveGroup;
     // use ark_ed_on_mnt4_298::{constraints::EdwardsVar, EdwardsProjective};
     use crate::pedersen::Commitment;
@@ -270,6 +271,7 @@ mod test {
     fn test_nifs_gadget() {
         let mut rng = ark_std::test_rng();
         let pedersen_params = pedersen::Pedersen::<MNT6G1Projective>::new_params(&mut rng, 100); // 100 is wip, will get it from actual vec
+        let poseidon_config = poseidon_test_config::<Fq>();
 
         let cs = ConstraintSystem::<Fr>::new_ref();
 
@@ -280,7 +282,9 @@ mod test {
 
         let fw1 = nifs::FWit::<MNT6G1Projective>::new(w1.clone(), A.len());
         let fw2 = nifs::FWit::<MNT6G1Projective>::new(w2.clone(), A.len());
-        let mut transcript_p = Transcript::<Fq>::new();
+
+        let mut transcript_p = Transcript::<Fq, MNT6G1Projective>::new(&poseidon_config);
+
         let (fw3, phi1, phi2, T, cmT) = nifs::NIFS::<MNT6G1Projective>::P(
             &mut transcript_p,
             &pedersen_params,
@@ -304,6 +308,6 @@ mod test {
         let valid = NIFSGadget::<MNT6G1Projective, MNT6G1Var>::verify(
             rVar, cmTVar, phi1Var, phi2Var, phi3Var,
         );
-        println!("num_constraints={:?}", cs.num_constraints());
+        // println!("num_constraints={:?}", cs.num_constraints());
     }
 }

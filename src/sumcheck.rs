@@ -1,6 +1,7 @@
 // this file contains a sum-check protocol initial implementation, not used by the rest of the repo
 // but implemented as an exercise and it will probably be used in the future.
 
+use ark_ec::{CurveGroup, Group};
 use ark_ff::{BigInteger, PrimeField};
 use ark_poly::{
     multivariate::{SparsePolynomial, SparseTerm, Term},
@@ -14,23 +15,30 @@ use ark_std::marker::PhantomData;
 use ark_std::ops::Mul;
 use ark_std::{rand::Rng, UniformRand};
 
+use ark_crypto_primitives::sponge::{poseidon::PoseidonConfig, Absorb};
+
 use crate::transcript::Transcript;
 
 pub struct SumCheck<
-    F: PrimeField,
+    F: PrimeField + Absorb,
+    C: CurveGroup,
     UV: Polynomial<F> + DenseUVPolynomial<F>,
     MV: Polynomial<F> + DenseMVPolynomial<F>,
 > {
     _f: PhantomData<F>,
+    _c: PhantomData<C>,
     _uv: PhantomData<UV>,
     _mv: PhantomData<MV>,
 }
 
 impl<
-        F: PrimeField,
+        F: PrimeField + Absorb,
+        C: CurveGroup,
         UV: Polynomial<F> + DenseUVPolynomial<F>,
         MV: Polynomial<F> + DenseMVPolynomial<F>,
-    > SumCheck<F, UV, MV>
+    > SumCheck<F, C, UV, MV>
+where
+    <C as CurveGroup>::BaseField: Absorb,
 {
     fn partial_evaluate(g: &MV, point: &[Option<F>]) -> UV {
         assert!(point.len() >= g.num_vars(), "Invalid evaluation domain");
@@ -121,12 +129,12 @@ impl<
         p
     }
 
-    pub fn prove(g: MV) -> (F, Vec<UV>, F)
+    pub fn prove(poseidon_config: &PoseidonConfig<F>, g: MV) -> (F, Vec<UV>, F)
     where
         <MV as Polynomial<F>>::Point: From<Vec<F>>,
     {
         // init transcript
-        let mut transcript: Transcript<F> = Transcript::<F>::new();
+        let mut transcript = Transcript::<F, C>::new(poseidon_config);
 
         let v = g.num_vars();
 
@@ -137,12 +145,12 @@ impl<
 
             H = H + g.evaluate(&p.into());
         }
-        transcript.add(b"H", &H);
+        transcript.add(&H);
 
         let mut ss: Vec<UV> = Vec::new();
         let mut r: Vec<F> = vec![];
         for i in 0..v {
-            let r_i = transcript.get_challenge(b"r_i");
+            let r_i = transcript.get_challenge();
             r.push(r_i);
 
             let var_slots = v - 1 - i;
@@ -153,7 +161,7 @@ impl<
                 let point = Self::point(r[..i].to_vec(), true, v, j);
                 s_i = s_i + Self::partial_evaluate(&g, &point);
             }
-            transcript.add(b"s_i", &s_i);
+            transcript.add_vec(s_i.coeffs());
             ss.push(s_i);
         }
 
@@ -161,10 +169,10 @@ impl<
         (H, ss, last_g_eval)
     }
 
-    pub fn verify(proof: (F, Vec<UV>, F)) -> bool {
+    pub fn verify(poseidon_config: &PoseidonConfig<F>, proof: (F, Vec<UV>, F)) -> bool {
         // init transcript
-        let mut transcript: Transcript<F> = Transcript::<F>::new();
-        transcript.add(b"H", &proof.0);
+        let mut transcript = Transcript::<F, C>::new(poseidon_config);
+        transcript.add(&proof.0);
 
         let (c, ss, last_g_eval) = proof;
 
@@ -175,18 +183,18 @@ impl<
                 if c != s.evaluate(&F::zero()) + s.evaluate(&F::one()) {
                     return false;
                 }
-                let r_i = transcript.get_challenge(b"r_i");
+                let r_i = transcript.get_challenge();
                 r.push(r_i);
-                transcript.add(b"s_i", s);
+                transcript.add_vec(s.coeffs());
                 continue;
             }
 
-            let r_i = transcript.get_challenge(b"r_i");
+            let r_i = transcript.get_challenge();
             r.push(r_i);
             if ss[i - 1].evaluate(&r[i - 1]) != s.evaluate(&F::zero()) + s.evaluate(&F::one()) {
                 return false;
             }
-            transcript.add(b"s_i", s);
+            transcript.add_vec(s.coeffs());
         }
         // last round
         if ss[ss.len() - 1].evaluate(&r[r.len() - 1]) != last_g_eval {
@@ -200,14 +208,15 @@ impl<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_mnt4_298::Fr; // scalar field
+    use crate::transcript::poseidon_test_config;
+    use ark_mnt4_298::{Fr, G1Projective}; // scalar field
 
     #[test]
     fn test_new_point() {
         let f4 = Fr::from(4_u32);
         let f1 = Fr::from(1);
         let f0 = Fr::from(0);
-        type SC = SumCheck<Fr, DensePolynomial<Fr>, SparsePolynomial<Fr, SparseTerm>>;
+        type SC = SumCheck<Fr, G1Projective, DensePolynomial<Fr>, SparsePolynomial<Fr, SparseTerm>>;
 
         let p = SC::point(vec![Fr::from(4_u32)], true, 5, 0);
         assert_eq!(vec![Some(f4), None, Some(f0), Some(f0), Some(f0),], p);
@@ -265,7 +274,7 @@ mod tests {
         ];
         let p = SparsePolynomial::from_coefficients_slice(3, &terms);
 
-        type SC = SumCheck<Fr, DensePolynomial<Fr>, SparsePolynomial<Fr, SparseTerm>>;
+        type SC = SumCheck<Fr, G1Projective, DensePolynomial<Fr>, SparsePolynomial<Fr, SparseTerm>>;
 
         let e0 = SC::partial_evaluate(&p, &[Some(Fr::from(2_u32)), None, Some(Fr::from(0_u32))]);
         assert_eq!(e0.coeffs(), vec![Fr::from(16_u32)]);
@@ -293,13 +302,14 @@ mod tests {
         let p = SparsePolynomial::from_coefficients_slice(3, &terms);
         // println!("p {:?}", p);
 
-        type SC = SumCheck<Fr, DensePolynomial<Fr>, SparsePolynomial<Fr, SparseTerm>>;
+        let poseidon_config = poseidon_test_config::<Fr>();
+        type SC = SumCheck<Fr, G1Projective, DensePolynomial<Fr>, SparsePolynomial<Fr, SparseTerm>>;
 
-        let proof = SC::prove(p);
+        let proof = SC::prove(&poseidon_config, p);
         assert_eq!(proof.0, Fr::from(12_u32));
         // println!("proof {:?}", proof);
 
-        let v = SC::verify(proof);
+        let v = SC::verify(&poseidon_config, proof);
         assert!(v);
     }
 
@@ -335,12 +345,13 @@ mod tests {
         let p = rand_poly(3, 3, &mut rng);
         // println!("p {:?}", p);
 
-        type SC = SumCheck<Fr, DensePolynomial<Fr>, SparsePolynomial<Fr, SparseTerm>>;
+        let poseidon_config = poseidon_test_config::<Fr>();
+        type SC = SumCheck<Fr, G1Projective, DensePolynomial<Fr>, SparsePolynomial<Fr, SparseTerm>>;
 
-        let proof = SC::prove(p);
-        println!("proof.s len {:?}", proof.1.len());
+        let proof = SC::prove(&poseidon_config, p);
+        // println!("proof.s len {:?}", proof.1.len());
 
-        let v = SC::verify(proof);
+        let v = SC::verify(&poseidon_config, proof);
         assert!(v);
     }
 }

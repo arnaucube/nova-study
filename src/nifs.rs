@@ -1,5 +1,5 @@
 // use ark_ec::AffineRepr;
-use ark_ec::CurveGroup;
+use ark_ec::{CurveGroup, Group};
 use ark_ff::fields::PrimeField;
 use ark_std::{
     rand::{Rng, RngCore},
@@ -11,6 +11,7 @@ use std::marker::PhantomData;
 use crate::pedersen::{Commitment, Params as PedersenParams, Pedersen, Proof as PedersenProof};
 use crate::transcript::Transcript;
 use crate::utils::*;
+use ark_crypto_primitives::sponge::Absorb;
 
 pub struct R1CS<F: PrimeField> {
     pub A: Vec<Vec<F>>,
@@ -35,7 +36,11 @@ pub struct FWit<C: CurveGroup> {
     rW: C::ScalarField,
 }
 
-impl<C: CurveGroup> FWit<C> {
+impl<C: CurveGroup> FWit<C>
+where
+    <C as Group>::ScalarField: Absorb,
+    <C as CurveGroup>::BaseField: Absorb,
+{
     pub fn new(z: Vec<C::ScalarField>, e_len: usize) -> Self {
         FWit::<C> {
             E: vec![C::ScalarField::zero(); e_len],
@@ -60,7 +65,11 @@ pub struct NIFS<C: CurveGroup> {
     _phantom: PhantomData<C>,
 }
 
-impl<C: CurveGroup> NIFS<C> {
+impl<C: CurveGroup> NIFS<C>
+where
+    <C as Group>::ScalarField: Absorb,
+    <C as CurveGroup>::BaseField: Absorb,
+{
     // comp_T: compute cross-terms T
     pub fn comp_T(
         r1cs: &R1CS<C::ScalarField>,
@@ -138,7 +147,7 @@ impl<C: CurveGroup> NIFS<C> {
 
     // NIFS.P
     pub fn P(
-        tr: &mut Transcript<C::ScalarField>,
+        tr: &mut Transcript<C::ScalarField, C>,
         pedersen_params: &PedersenParams<C>,
         r: C::ScalarField,
         r1cs: &R1CS<C::ScalarField>,
@@ -151,7 +160,7 @@ impl<C: CurveGroup> NIFS<C> {
 
         // compute cross terms
         let T = Self::comp_T(&r1cs, phi1.u, phi2.u, &fw1.W, &fw2.W);
-        let rT = tr.get_challenge(b"rT");
+        let rT = tr.get_challenge(); // r_T
         let cmT = Pedersen::commit(&pedersen_params, &T, &rT);
 
         // fold witness
@@ -193,7 +202,7 @@ impl<C: CurveGroup> NIFS<C> {
     }
 
     pub fn open_commitments(
-        tr: &mut Transcript<C::ScalarField>,
+        tr: &mut Transcript<C::ScalarField, C>,
         pedersen_params: &PedersenParams<C>,
         fw: &FWit<C>,
         phi: &Phi<C>,
@@ -207,7 +216,7 @@ impl<C: CurveGroup> NIFS<C> {
         (cmE_proof, cmW_proof, cmT_proof)
     }
     pub fn verify_commitments(
-        tr: &mut Transcript<C::ScalarField>,
+        tr: &mut Transcript<C::ScalarField, C>,
         pedersen_params: &PedersenParams<C>,
         phi: Phi<C>,
         cmT: Commitment<C>,
@@ -273,6 +282,7 @@ pub fn gen_test_values<R: Rng, F: PrimeField>(
 mod tests {
     use super::*;
     use crate::pedersen::Pedersen;
+    use crate::transcript::poseidon_test_config;
     use ark_ec::CurveGroup;
     use ark_mnt4_298::{Fr, G1Projective};
     use ark_std::{
@@ -287,6 +297,7 @@ mod tests {
     fn test_one_fold() {
         let mut rng = ark_std::test_rng();
         let pedersen_params = Pedersen::<G1Projective>::new_params(&mut rng, 100); // 100 is wip, will get it from actual vec
+        let poseidon_config = poseidon_test_config::<Fr>();
 
         let (r1cs, w1, w2, _, x1, x2, _) = gen_test_values(&mut rng);
         let (A, B, C) = (r1cs.A.clone(), r1cs.B.clone(), r1cs.C.clone());
@@ -329,9 +340,9 @@ mod tests {
         assert!(NIFS::<G1Projective>::verify(r, &phi1, &phi2, &phi3, &cmT));
 
         // init Prover's transcript
-        let mut transcript_p: Transcript<Fr> = Transcript::<Fr>::new();
+        let mut transcript_p = Transcript::<Fr, G1Projective>::new(&poseidon_config);
         // init Verifier's transcript
-        let mut transcript_v: Transcript<Fr> = Transcript::<Fr>::new();
+        let mut transcript_v = Transcript::<Fr, G1Projective>::new(&poseidon_config);
 
         // check openings of phi3.cmE, phi3.cmW and cmT
         let (cmE_proof, cmW_proof, cmT_proof) = NIFS::<G1Projective>::open_commitments(
@@ -359,6 +370,7 @@ mod tests {
     fn test_two_fold() {
         let mut rng = ark_std::test_rng();
         let pedersen_params = Pedersen::<G1Projective>::new_params(&mut rng, 6);
+        let poseidon_config = poseidon_test_config::<Fr>();
 
         let (r1cs, w1, w2, w3, x1, x2, x3) = gen_test_values(&mut rng);
 
@@ -433,9 +445,9 @@ mod tests {
         assert_eq!(phi_123_expected.cmW.0, phi_123.cmW.0);
 
         // init Prover's transcript
-        let mut transcript_p: Transcript<Fr> = Transcript::<Fr>::new();
+        let mut transcript_p = Transcript::<Fr, G1Projective>::new(&poseidon_config);
         // init Verifier's transcript
-        let mut transcript_v: Transcript<Fr> = Transcript::<Fr>::new();
+        let mut transcript_v = Transcript::<Fr, G1Projective>::new(&poseidon_config);
 
         // check openings of phi_123.cmE, phi_123.cmW and cmT_123
         let (cmE_proof, cmW_proof, cmT_proof) = NIFS::<G1Projective>::open_commitments(
@@ -463,6 +475,7 @@ mod tests {
     fn test_nifs_interface() {
         let mut rng = ark_std::test_rng();
         let pedersen_params = Pedersen::<G1Projective>::new_params(&mut rng, 100); // 100 is wip, will get it from actual vec
+        let poseidon_config = poseidon_test_config::<Fr>();
 
         let (r1cs, w1, w2, _, x1, x2, _) = gen_test_values(&mut rng);
         let (A, B, C) = (r1cs.A.clone(), r1cs.B.clone(), r1cs.C.clone());
@@ -473,14 +486,14 @@ mod tests {
         let fw2 = FWit::<G1Projective>::new(w2.clone(), A.len());
 
         // init Prover's transcript
-        let mut transcript_p: Transcript<Fr> = Transcript::<Fr>::new();
+        let mut transcript_p = Transcript::<Fr, G1Projective>::new(&poseidon_config);
 
         // NIFS.P
         let (fw3, phi1, phi2, T, cmT) =
             NIFS::<G1Projective>::P(&mut transcript_p, &pedersen_params, r, &r1cs, fw1, fw2);
 
         // init Verifier's transcript
-        let mut transcript_v: Transcript<Fr> = Transcript::<Fr>::new();
+        let mut transcript_v = Transcript::<Fr, G1Projective>::new(&poseidon_config);
 
         // NIFS.V
         let phi3 = NIFS::<G1Projective>::V(r, &phi1, &phi2, &cmT);
