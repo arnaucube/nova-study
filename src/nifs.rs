@@ -26,10 +26,10 @@ pub struct Phi<C: CurveGroup> {
 
 // FWit: Folded Witness
 pub struct FWit<C: CurveGroup> {
-    E: Vec<C::ScalarField>,
-    rE: C::ScalarField,
-    W: Vec<C::ScalarField>,
-    rW: C::ScalarField,
+    pub E: Vec<C::ScalarField>,
+    pub rE: C::ScalarField,
+    pub W: Vec<C::ScalarField>,
+    pub rW: C::ScalarField,
 }
 
 impl<C: CurveGroup> FWit<C>

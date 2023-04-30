@@ -6,6 +6,7 @@
 #![allow(dead_code)] // TMP
 
 mod circuits;
+mod ivc;
 mod nifs;
 mod pedersen;
 mod sumcheck;

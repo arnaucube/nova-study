@@ -125,17 +125,18 @@ pub struct AugmentedFCircuit<C: CurveGroup, GC: CurveVar<C, ConstraintF<C>>>
 where
     <<C as CurveGroup>::BaseField as Field>::BasePrimeField: Absorb,
 {
-    _c: PhantomData<C>,
-    _gc: PhantomData<GC>,
+    pub _c: PhantomData<C>,
+    pub _gc: PhantomData<GC>,
 
-    pub poseidon_native: PoseidonSponge<ConstraintF<C>>,
+    // pub poseidon_native: PoseidonSponge<ConstraintF<C>>,
     pub poseidon_config: PoseidonConfig<ConstraintF<C>>,
     pub i: Option<C::BaseField>,
     pub z_0: Option<C::BaseField>,
     pub z_i: Option<C::BaseField>,
-    pub phi: Option<Phi<C>>, // phi in the paper sometimes appears as phi (φ) and others as 𝗎
-    pub phiBig: Option<Phi<C>>,
-    pub phiOut: Option<Phi<C>>,
+    pub z_i1: Option<C::BaseField>, // z_{i+1}
+    pub phi: Option<Phi<C>>, // phi_i in the paper sometimes appears as phi (φ) and others as 𝗎
+    pub phiBig: Option<Phi<C>>, // ϕ_i
+    pub phiOut: Option<Phi<C>>, // ϕ_{i+1}
     pub cmT: Option<C>,
     pub r: Option<C::ScalarField>, // This will not be an input and derived from a hash internally in the circuit (poseidon transcript)
 }
@@ -156,6 +157,7 @@ where
         let i = FpVar::<ConstraintF<C>>::new_witness(cs.clone(), || Ok(self.i.unwrap()))?;
         let z_0 = FpVar::<ConstraintF<C>>::new_witness(cs.clone(), || Ok(self.z_0.unwrap()))?;
         let z_i = FpVar::<ConstraintF<C>>::new_witness(cs.clone(), || Ok(self.z_i.unwrap()))?;
+        let z_i1 = FpVar::<ConstraintF<C>>::new_witness(cs.clone(), || Ok(self.z_i1.unwrap()))?;
 
         let phi = PhiVar::<C, GC>::new_witness(cs.clone(), || Ok(self.phi.unwrap()))?;
         let phiBig = PhiVar::<C, GC>::new_witness(cs.clone(), || Ok(self.phiBig.unwrap()))?;
@@ -168,8 +170,9 @@ where
             })?; // r will come from transcript
 
         // 1. phi.x == H(vk_nifs, i, z_0, z_i, phiBig)
-        let mut sponge = PoseidonSpongeVar::<ConstraintF<C>>::new(cs, &self.poseidon_config);
-        let input = vec![i, z_0, z_i];
+        let mut sponge =
+            PoseidonSpongeVar::<ConstraintF<C>>::new(cs.clone(), &self.poseidon_config);
+        let input = vec![i.clone(), z_0.clone(), z_i.clone()];
         sponge.absorb(&input)?;
         let input = vec![
             phiBig.u.to_constraint_field()?,
@@ -182,15 +185,24 @@ where
         let x_CF = phi.x.to_constraint_field()?; // phi.x on the ConstraintF<C>
         x_CF[0].enforce_equal(&h[0])?; // review
 
-        // // 2. phi.cmE==0, phi.u==1
-        // <GC as CurveVar<C, ConstraintF<C>>>::is_zero(&phi.cmE)?;
+        // 2. phi.cmE==0, phi.u==1
         (phi.cmE.is_zero()?).enforce_equal(&Boolean::TRUE)?;
         (phi.u.is_one()?).enforce_equal(&Boolean::TRUE)?;
 
-        // 3. nifs.verify
-        NIFSGadget::<C, GC>::verify(r, cmT, phi, phiBig, phiOut)?;
+        // 3. nifs.verify, checks that folding phi & phiBig obtains phiOut
+        NIFSGadget::<C, GC>::verify(r, cmT, phi, phiBig, phiOut.clone())?;
 
         // 4. zksnark.V(vk_snark, phi_new, proof_phi)
+        // 5. phiOut.x == H(i+1, z_0, z_i+1, phiOut)
+        // WIP
+        let mut sponge = PoseidonSpongeVar::<ConstraintF<C>>::new(cs, &self.poseidon_config);
+        let input = vec![i + FpVar::<ConstraintF<C>>::one(), z_0, z_i1];
+        sponge.absorb(&input)?;
+        let input = vec![phiOut.cmE.to_bytes()?, phiOut.cmW.to_bytes()?];
+        sponge.absorb(&input)?;
+        let h = sponge.squeeze_field_elements(1).unwrap();
+        let x_CF = phiOut.x.to_constraint_field()?; // phi.x on the ConstraintF<C>
+        x_CF[0].enforce_equal(&h[0])?; // review
 
         Ok(())
     }
