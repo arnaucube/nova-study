@@ -17,8 +17,8 @@ use crate::transcript::Transcript;
 pub struct SumCheck<
     F: PrimeField + Absorb,
     C: CurveGroup,
-    UV: Polynomial<F> + DenseUVPolynomial<F>,
-    MV: Polynomial<F> + DenseMVPolynomial<F>,
+    UV: DenseUVPolynomial<F>,
+    MV: DenseMVPolynomial<F>,
 > {
     _f: PhantomData<F>,
     _c: PhantomData<C>,

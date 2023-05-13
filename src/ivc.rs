@@ -7,7 +7,7 @@ use ark_crypto_primitives::sponge::poseidon::{PoseidonConfig, PoseidonSponge};
 use ark_r1cs_std::{groups::GroupOpsBounds, prelude::CurveVar};
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 
-use crate::circuits::{AugmentedFCircuit, ConstraintF};
+use crate::circuits::{AugmentedFCircuit, ConstraintF, FCircuit};
 use crate::nifs::{FWit, Phi, NIFS, R1CS};
 use crate::pedersen::{Commitment, Params as PedersenParams, Pedersen, Proof as PedersenProof};
 use crate::transcript::Transcript;
@@ -29,6 +29,7 @@ pub struct IVC<
     GC1: CurveVar<C1, ConstraintF<C1>>,
     C2: CurveGroup,
     GC2: CurveVar<C2, ConstraintF<C2>>,
+    FC: FCircuit<C1::ScalarField>,
 > where
     C1: CurveGroup<BaseField = <C2 as Group>::ScalarField>,
     C2: CurveGroup<BaseField = <C1 as Group>::ScalarField>,
@@ -37,10 +38,12 @@ pub struct IVC<
     _gc1: PhantomData<GC1>,
     _c2: PhantomData<C2>,
     _gc2: PhantomData<GC2>,
+    _fc: PhantomData<FC>,
 
     pub poseidon_config: PoseidonConfig<ConstraintF<C2>>,
     pub pedersen_params_C1: PedersenParams<C1>,
     pub pedersen_params_C2: PedersenParams<C2>,
+    pub F: FC, // F circuit
 }
 
 impl<
@@ -48,7 +51,8 @@ impl<
         GC1: CurveVar<C1, ConstraintF<C1>>,
         C2: CurveGroup,
         GC2: CurveVar<C2, ConstraintF<C2>>,
-    > IVC<C1, GC1, C2, GC2>
+        FC: FCircuit<C1::ScalarField>,
+    > IVC<C1, GC1, C2, GC2, FC>
 where
     for<'a> &'a GC1: GroupOpsBounds<'a, C1, GC1>,
     for<'a> &'a GC2: GroupOpsBounds<'a, C2, GC2>,
@@ -68,14 +72,13 @@ where
     pub fn prove(
         &self,
         cs: ConstraintSystemRef<ConstraintF<C2>>,
+        // TODO move part of these parameters to struct constructor instead of prove method
         tr1: &mut Transcript<C1::ScalarField, C1>,
         tr2: &mut Transcript<C2::ScalarField, C2>,
         r1cs: &R1CS<C2::ScalarField>,
         i: C1::ScalarField,
         z_0: C1::ScalarField,
         z_i: C1::ScalarField,
-        // phi1: &Phi<C>,
-        // phi2: &Phi<C>,
         fw1: FWit<C2>,
         fw2: FWit<C2>,
     ) -> Result<IVCProof<C1, C2>, SynthesisError> {
@@ -87,22 +90,24 @@ where
             NIFS::<C2>::P(tr2, &self.pedersen_params_C2, r, r1cs, fw1, fw2);
         let phi3 = NIFS::<C2>::V(r, &phi1, &phi2, &cmT);
 
-        // TODO compute z_{i+1}
-        let z_i1 = z_i.clone(); // WIP this will be the actual computed z_{i+1}
+        // get z_{i+1}
+        let (_, F_z_i1) = self.F.public();
 
-        let c = AugmentedFCircuit::<C2, GC2> {
+        let c = AugmentedFCircuit::<C2, GC2, FC> {
             _c: PhantomData,
             _gc: PhantomData,
             poseidon_config: self.poseidon_config.clone(),
             i: Some(i),
             z_0: Some(z_0),
             z_i: Some(z_i),
-            z_i1: Some(z_i1),
+            z_i1: Some(F_z_i1),
             phi: Some(phi1),
             phiBig: Some(phi2),
-            phiOut: Some(phi3.clone()),
+            phiBigOut: Some(phi3.clone()),
             cmT: Some(cmT.0),
             r: Some(r),
+            F: self.F,
+            x: i, // TODO WIP put x in there
         };
 
         c.generate_constraints(cs.clone())?;

@@ -40,12 +40,14 @@ where
     pub fn new(z: Vec<C::ScalarField>, e_len: usize) -> Self {
         FWit::<C> {
             E: vec![C::ScalarField::zero(); e_len],
-            rE: C::ScalarField::one(),
+            rE: C::ScalarField::one(), // TODO rand
             W: z,
-            rW: C::ScalarField::one(),
+            rW: C::ScalarField::one(), // rand
         }
     }
     pub fn commit(&self, params: &PedersenParams<C>) -> Phi<C> {
+        // TODO maybe, if E=0, set cmE=0 (instead of cm(0)), to indicate that is a commitment to a
+        // 0 E
         let cmE = Pedersen::commit(params, &self.E, &self.rE);
         let cmW = Pedersen::commit(params, &self.W, &self.rW);
         Phi {

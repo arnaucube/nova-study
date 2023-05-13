@@ -1,16 +1,20 @@
-use ark_ec::CurveGroup;
-use ark_ff::{Field, PrimeField};
+use ark_ec::{AffineRepr, CurveGroup, Group};
+use ark_ff::{BigInteger, Field, PrimeField, ToConstraintField};
 use ark_r1cs_std::{
     alloc::{AllocVar, AllocationMode},
+    bits::uint8::UInt8,
     boolean::Boolean,
     eq::EqGadget,
     fields::{fp::FpVar, nonnative::NonNativeFieldVar, FieldVar},
     groups::GroupOpsBounds,
     prelude::CurveVar,
     ToBitsGadget,
+    ToBytesGadget,
     ToConstraintFieldGadget,
     // groups::curves::short_weierstrass::ProjectiveVar,
 };
+use ark_serialize::CanonicalSerialize;
+use ark_std::{One, Zero};
 // use ark_r1cs_std::groups::curves::twisted_edwards::AffineVar;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
 
@@ -20,9 +24,11 @@ use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace,
 // };
 // use ark_crypto_primitives::crh::{CRHScheme, CRHSchemeGadget};
 // use ark_crypto_primitives::snark::{FromFieldElementsGadget, SNARKGadget, SNARK};
-use ark_crypto_primitives::sponge::constraints::CryptographicSpongeVar;
 use ark_crypto_primitives::sponge::poseidon::{
     constraints::PoseidonSpongeVar, PoseidonConfig, PoseidonSponge,
+};
+use ark_crypto_primitives::sponge::{
+    constraints::CryptographicSpongeVar, Absorb, CryptographicSponge,
 };
 
 use core::{borrow::Borrow, marker::PhantomData};
@@ -120,9 +126,16 @@ where
     }
 }
 
-use ark_crypto_primitives::sponge::Absorb;
-pub struct AugmentedFCircuit<C: CurveGroup, GC: CurveVar<C, ConstraintF<C>>>
-where
+pub trait FCircuit<F: PrimeField>: ConstraintSynthesizer<F> + Copy {
+    // method that returns z_i (input), z_i1 (output)
+    fn public(self) -> (F, F);
+}
+
+pub struct AugmentedFCircuit<
+    C: CurveGroup,
+    GC: CurveVar<C, ConstraintF<C>>,
+    FC: FCircuit<ConstraintF<C>>,
+> where
     <<C as CurveGroup>::BaseField as Field>::BasePrimeField: Absorb,
 {
     pub _c: PhantomData<C>,
@@ -130,19 +143,21 @@ where
 
     // pub poseidon_native: PoseidonSponge<ConstraintF<C>>,
     pub poseidon_config: PoseidonConfig<ConstraintF<C>>,
-    pub i: Option<C::BaseField>,
+    pub i: Option<C::BaseField>, // TODO rm Option in all params
     pub z_0: Option<C::BaseField>,
     pub z_i: Option<C::BaseField>,
     pub z_i1: Option<C::BaseField>, // z_{i+1}
-    pub phi: Option<Phi<C>>, // phi_i in the paper sometimes appears as phi (φ) and others as 𝗎
+    pub phi: Option<Phi<C>>, // phi_i in the paper sometimes appears as phi (φ_i) and others as 𝗎
     pub phiBig: Option<Phi<C>>, // ϕ_i
-    pub phiOut: Option<Phi<C>>, // ϕ_{i+1}
+    pub phiBigOut: Option<Phi<C>>, // ϕ_{i+1}
     pub cmT: Option<C>,
     pub r: Option<C::ScalarField>, // This will not be an input and derived from a hash internally in the circuit (poseidon transcript)
+    pub F: FC,                     // F circuit
+    pub x: ConstraintF<C>,         // pub input (φ_{i+1}.x)
 }
 
-impl<C: CurveGroup, GC: CurveVar<C, ConstraintF<C>>> ConstraintSynthesizer<ConstraintF<C>>
-    for AugmentedFCircuit<C, GC>
+impl<C: CurveGroup, GC: CurveVar<C, ConstraintF<C>>, FC: FCircuit<ConstraintF<C>>>
+    ConstraintSynthesizer<ConstraintF<C>> for AugmentedFCircuit<C, GC, FC>
 where
     C: CurveGroup,
     GC: CurveVar<C, ConstraintF<C>>,
@@ -154,14 +169,14 @@ where
         self,
         cs: ConstraintSystemRef<ConstraintF<C>>,
     ) -> Result<(), SynthesisError> {
-        let i = FpVar::<ConstraintF<C>>::new_witness(cs.clone(), || Ok(self.i.unwrap()))?;
-        let z_0 = FpVar::<ConstraintF<C>>::new_witness(cs.clone(), || Ok(self.z_0.unwrap()))?;
-        let z_i = FpVar::<ConstraintF<C>>::new_witness(cs.clone(), || Ok(self.z_i.unwrap()))?;
-        let z_i1 = FpVar::<ConstraintF<C>>::new_witness(cs.clone(), || Ok(self.z_i1.unwrap()))?;
+        let i = FpVar::<ConstraintF<C>>::new_input(cs.clone(), || Ok(self.i.unwrap()))?;
+        let z_0 = FpVar::<ConstraintF<C>>::new_input(cs.clone(), || Ok(self.z_0.unwrap()))?;
+        let z_i = FpVar::<ConstraintF<C>>::new_input(cs.clone(), || Ok(self.z_i.unwrap()))?;
+        let z_i1 = FpVar::<ConstraintF<C>>::new_input(cs.clone(), || Ok(self.z_i1.unwrap()))?;
 
         let phi = PhiVar::<C, GC>::new_witness(cs.clone(), || Ok(self.phi.unwrap()))?;
         let phiBig = PhiVar::<C, GC>::new_witness(cs.clone(), || Ok(self.phiBig.unwrap()))?;
-        let phiOut = PhiVar::<C, GC>::new_witness(cs.clone(), || Ok(self.phiOut.unwrap()))?;
+        let phiBigOut = PhiVar::<C, GC>::new_witness(cs.clone(), || Ok(self.phiBigOut.unwrap()))?;
 
         let cmT = GC::new_witness(cs.clone(), || Ok(self.cmT.unwrap()))?;
         let r =
@@ -169,42 +184,134 @@ where
                 Ok(self.r.unwrap())
             })?; // r will come from transcript
 
-        // 1. phi.x == H(vk_nifs, i, z_0, z_i, phiBig)
-        let mut sponge =
-            PoseidonSpongeVar::<ConstraintF<C>>::new(cs.clone(), &self.poseidon_config);
-        let input = vec![i.clone(), z_0.clone(), z_i.clone()];
-        sponge.absorb(&input)?;
-        let input = vec![
-            phiBig.u.to_constraint_field()?,
-            phiBig.x.to_constraint_field()?,
-        ];
-        sponge.absorb(&input)?;
-        let input = vec![phiBig.cmE.to_bytes()?, phiBig.cmW.to_bytes()?];
-        sponge.absorb(&input)?;
-        let h = sponge.squeeze_field_elements(1).unwrap();
-        let x_CF = phi.x.to_constraint_field()?; // phi.x on the ConstraintF<C>
-        x_CF[0].enforce_equal(&h[0])?; // review
+        // if i=0, output H(vk_nifs, 1, z_0, z_i1, phi)
+        let phiOut_x = AugmentedFCircuit::<C, GC, FC>::phi_x_hash_var(
+            cs.clone(),
+            self.poseidon_config.clone(),
+            FpVar::<ConstraintF<C>>::one(),
+            z_0.clone(),
+            z_i1.clone(),
+            phi.clone(),
+        )?;
+        // TODO WIP: x is the output when i=0
 
-        // 2. phi.cmE==0, phi.u==1
-        (phi.cmE.is_zero()?).enforce_equal(&Boolean::TRUE)?;
+        // 1. phi.x == H(vk_nifs, i, z_0, z_i, phiBig)
+        let h = AugmentedFCircuit::<C, GC, FC>::phi_x_hash_var(
+            cs.clone(),
+            self.poseidon_config.clone(),
+            i.clone(),
+            z_0.clone(),
+            z_i.clone(),
+            phiBig.clone(),
+        )?;
+        let x_CF = phi.x.to_constraint_field()?; // phi.x on the ConstraintF<C>
+                                                 // x_CF[0].enforce_equal(&h)?; // review
+
+        // 2. phi.cmE==cm(0), phi.u==1
+        // (phi.cmE.is_zero()?).enforce_equal(&Boolean::TRUE)?; // TODO check that cmE = cm(0)
         (phi.u.is_one()?).enforce_equal(&Boolean::TRUE)?;
 
-        // 3. nifs.verify, checks that folding phi & phiBig obtains phiOut
-        NIFSGadget::<C, GC>::verify(r, cmT, phi, phiBig, phiOut.clone())?;
+        // 3. nifs.verify, checks that folding phi & phiBig obtains phiBigOut
+        NIFSGadget::<C, GC>::verify(r, cmT, phi, phiBig, phiBigOut.clone())?;
 
         // 4. zksnark.V(vk_snark, phi_new, proof_phi)
-        // 5. phiOut.x == H(i+1, z_0, z_i+1, phiOut)
+        // 5. phi.x == H(i+1, z_0, z_i+1, phiBigOut)
+        let h = AugmentedFCircuit::<C, GC, FC>::phi_x_hash_var(
+            cs.clone(),
+            self.poseidon_config.clone(),
+            i + FpVar::<ConstraintF<C>>::one(),
+            z_0.clone(),
+            z_i1.clone(),
+            phiBigOut.clone(),
+        )?;
         // WIP
-        let mut sponge = PoseidonSpongeVar::<ConstraintF<C>>::new(cs, &self.poseidon_config);
-        let input = vec![i + FpVar::<ConstraintF<C>>::one(), z_0, z_i1];
-        sponge.absorb(&input)?;
-        let input = vec![phiOut.cmE.to_bytes()?, phiOut.cmW.to_bytes()?];
-        sponge.absorb(&input)?;
-        let h = sponge.squeeze_field_elements(1).unwrap();
-        let x_CF = phiOut.x.to_constraint_field()?; // phi.x on the ConstraintF<C>
-        x_CF[0].enforce_equal(&h[0])?; // review
+        let x_CF = phiBigOut.x.to_constraint_field()?; // phi.x on the ConstraintF<C>
+                                                       // x_CF[0].enforce_equal(&h)?; // TODO review
+
+        // WIP assert that z_i1 == F(z_i).z_i1
+        // self.F.generate_constraints(cs.clone())?;
 
         Ok(())
+    }
+}
+
+impl<C: CurveGroup, GC: CurveVar<C, ConstraintF<C>>, FC: FCircuit<ConstraintF<C>>>
+    AugmentedFCircuit<C, GC, FC>
+where
+    C: CurveGroup,
+    GC: CurveVar<C, ConstraintF<C>>,
+    for<'a> &'a GC: GroupOpsBounds<'a, C, GC>,
+    <<C as CurveGroup>::BaseField as Field>::BasePrimeField: Absorb,
+    <C as CurveGroup>::BaseField: Absorb,
+{
+    fn phi_x_hash_var(
+        cs: ConstraintSystemRef<ConstraintF<C>>,
+        poseidon_config: PoseidonConfig<ConstraintF<C>>,
+        i: FpVar<ConstraintF<C>>,
+        z_0: FpVar<ConstraintF<C>>,
+        z_i: FpVar<ConstraintF<C>>,
+        phi: PhiVar<C, GC>,
+    ) -> Result<FpVar<ConstraintF<C>>, SynthesisError> {
+        // note: this method can be optimized if instead of bytes representations we hash finite
+        // field elements (in the constraint field)
+        let mut sponge = PoseidonSpongeVar::<ConstraintF<C>>::new(cs.clone(), &poseidon_config);
+
+        let input = vec![i, z_0, z_i];
+        sponge.absorb(&input)?;
+
+        let input: Vec<Vec<UInt8<ConstraintF<C>>>> = vec![phi.u.to_bytes()?, phi.x.to_bytes()?];
+        sponge.absorb(&input)?;
+
+        let input = vec![phi.cmE.to_bytes()?, phi.cmW.to_bytes()?];
+        sponge.absorb(&input)?;
+
+        let h = sponge.squeeze_field_elements(1).unwrap();
+        Ok(h[0].clone())
+    }
+    fn phi_x_hash(
+        poseidon_config: PoseidonConfig<ConstraintF<C>>,
+        i: ConstraintF<C>,
+        z_0: ConstraintF<C>,
+        z_i: ConstraintF<C>,
+        phi: Phi<C>,
+    ) -> ConstraintF<C> {
+        let mut sponge = PoseidonSponge::<ConstraintF<C>>::new(&poseidon_config);
+
+        let input: Vec<ConstraintF<C>> = vec![i, z_0, z_i];
+        sponge.absorb(&input);
+
+        let input: Vec<Vec<u8>> = vec![
+            phi.u.into_bigint().to_bytes_le(),
+            phi.x.into_bigint().to_bytes_le(),
+        ];
+        sponge.absorb(&input);
+
+        let cmE_bytes = Self::to_bytes_cs_compat(phi.cmE.0);
+        let cmW_bytes = Self::to_bytes_cs_compat(phi.cmW.0);
+        let input = vec![cmE_bytes, cmW_bytes];
+        sponge.absorb(&input);
+
+        let h = sponge.squeeze_field_elements(1);
+        h[0]
+    }
+
+    fn to_bytes_cs_compat(c: C) -> Vec<u8> {
+        // note: this method has been implemented to be compatible with the arkworks/r1cs-std
+        // short_weierstrass/ProjectiveVar ToBytesGadget implementation, as the
+        // arkworks/algebra/serialize/SWCurveConfig version is not compatible.
+        let a = c.into_affine();
+        let x = a.x().unwrap();
+        let y = a.y().unwrap();
+        let mut x_bytes = Vec::new();
+        x.serialize_uncompressed(&mut x_bytes).unwrap();
+        let mut y_bytes = Vec::new();
+        y.serialize_uncompressed(&mut y_bytes).unwrap();
+
+        x_bytes.append(&mut vec![0, 0]);
+        y_bytes.append(&mut vec![0, 0]);
+        x_bytes.append(&mut y_bytes);
+        x_bytes.push(0);
+        x_bytes
     }
 }
 
@@ -232,11 +339,34 @@ where
 //     dummy_vk: <Config::DummyStepSNARK as SNARK<SecondField>>::VerifyingKey,
 // }
 
+#[derive(Clone, Copy, Debug)]
+pub struct TestFCircuit<F: PrimeField> {
+    z_i: F,  // z_i
+    z_i1: F, // z_{i+1}
+}
+impl<F: PrimeField> FCircuit<F> for TestFCircuit<F> {
+    fn public(self) -> (F, F) {
+        (self.z_i, self.z_i1)
+    }
+}
+impl<F: PrimeField> ConstraintSynthesizer<F> for TestFCircuit<F> {
+    fn generate_constraints(self, cs: ConstraintSystemRef<F>) -> Result<(), SynthesisError> {
+        let z_i = FpVar::<F>::new_input(cs.clone(), || Ok(self.z_i))?;
+        let z_i1 = FpVar::<F>::new_input(cs.clone(), || Ok(self.z_i1))?;
+        let five = FpVar::<F>::new_constant(cs.clone(), F::from(5u32))?;
+
+        let y = &z_i * &z_i * &z_i + &z_i + &five;
+        y.enforce_equal(&z_i1)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
 
     use crate::transcript::Transcript;
+    use ark_r1cs_std::R1CSVar;
     use ark_relations::r1cs::ConstraintSystem;
     use ark_std::UniformRand;
 
@@ -246,8 +376,7 @@ mod test {
     use ark_ec::Group;
     // use ark_ed_on_mnt4_298::{constraints::EdwardsVar, EdwardsProjective};
     use crate::pedersen::Commitment;
-    // use ark_mnt4_298::{constraints::G1Var as MNT4G1Var, G1Projective as MNT4G1Projective}
-    use ark_mnt4_298::{Fq, Fr};
+    use ark_mnt4_298::{constraints::G1Var as MNT4G1Var, Fq, Fr, G1Projective as MNT4G1Projective};
     use ark_mnt6_298::{constraints::G1Var as MNT6G1Var, G1Projective as MNT6G1Projective};
     use ark_std::One;
 
@@ -267,6 +396,49 @@ mod test {
         let _phiVar =
             PhiVar::<MNT6G1Projective, MNT6G1Var>::new_witness(cs.clone(), || Ok(phi)).unwrap();
         // println!("num_constraints={:?}", cs.num_constraints());
+    }
+
+    #[test]
+    fn test_phi_x_hash() {
+        let mut rng = ark_std::test_rng();
+        let poseidon_config = poseidon_test_config::<Fr>();
+
+        let z_0 = Fr::from(0_u32);
+        let z_i = Fr::from(3_u32);
+        let phi = Phi::<MNT6G1Projective> {
+            // cmE: Commitment(MNT6G1Projective::generator()),
+            cmE: Commitment(MNT6G1Projective::rand(&mut rng)),
+            u: Fq::one(),
+            cmW: Commitment(MNT6G1Projective::generator()),
+            x: Fq::one(),
+        };
+        let x = AugmentedFCircuit::<MNT6G1Projective, MNT6G1Var, TestFCircuit<Fr>>::phi_x_hash(
+            poseidon_config.clone(),
+            Fr::one(),
+            z_0.clone(),
+            z_i.clone(),
+            phi.clone(),
+        );
+
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        let z_0Var = FpVar::<Fr>::new_witness(cs.clone(), || Ok(z_0)).unwrap();
+        let z_iVar = FpVar::<Fr>::new_witness(cs.clone(), || Ok(z_i)).unwrap();
+        let phiVar =
+            PhiVar::<MNT6G1Projective, MNT6G1Var>::new_witness(cs.clone(), || Ok(phi)).unwrap();
+
+        let xVar =
+            AugmentedFCircuit::<MNT6G1Projective, MNT6G1Var, TestFCircuit<Fr>>::phi_x_hash_var(
+                cs.clone(),
+                poseidon_config.clone(),
+                FpVar::<Fr>::one(),
+                z_0Var,
+                z_iVar,
+                phiVar,
+            )
+            .unwrap();
+        println!("num_constraints={:?}", cs.num_constraints());
+
+        assert_eq!(x, xVar.value().unwrap());
     }
 
     #[test]
@@ -310,5 +482,72 @@ mod test {
         NIFSGadget::<MNT6G1Projective, MNT6G1Var>::verify(rVar, cmTVar, phi1Var, phi2Var, phi3Var)
             .unwrap();
         // println!("num_constraints={:?}", cs.num_constraints());
+        assert!(cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn test_augmented_f_circuit() {
+        let mut rng = ark_std::test_rng();
+        let pedersen_params = pedersen::Pedersen::<MNT6G1Projective>::new_params(&mut rng, 100); // 100 is wip, will get it from actual vec
+        let poseidon_config_Fq = poseidon_test_config::<Fq>();
+        let poseidon_config_Fr = poseidon_test_config::<Fr>();
+
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        let (r1cs, ws, _) = nifs::gen_test_values::<Fq>(2);
+        let A = r1cs.A.clone();
+
+        let r = Fq::rand(&mut rng); // this would come from the transcript
+
+        let fw1 = nifs::FWit::<MNT6G1Projective>::new(ws[0].clone(), A.len());
+        let fw2 = nifs::FWit::<MNT6G1Projective>::new(ws[1].clone(), A.len());
+
+        let mut transcript_p = Transcript::<Fq, MNT6G1Projective>::new(&poseidon_config_Fq);
+
+        let (_fw3, phi1, phi2, _T, cmT) = nifs::NIFS::<MNT6G1Projective>::P(
+            &mut transcript_p,
+            &pedersen_params,
+            r,
+            &r1cs,
+            fw1,
+            fw2,
+        );
+        let phi3 = nifs::NIFS::<MNT6G1Projective>::V(r, &phi1, &phi2, &cmT);
+        println!("phi1 {:?}", phi1.cmE);
+
+        let i = Fr::from(1_u32);
+        let z_0 = Fr::from(0_u32);
+        let z_i = Fr::from(3_u32);
+        let z_i1 = Fr::from(35_u32);
+        let test_F_circuit = TestFCircuit::<Fr> { z_i, z_i1 };
+
+        let x = AugmentedFCircuit::<MNT6G1Projective, MNT6G1Var, TestFCircuit<Fr>>::phi_x_hash(
+            poseidon_config_Fr.clone(),
+            i + Fr::one(),
+            z_0.clone(),
+            z_i1.clone(),
+            phi3.clone(),
+        );
+
+        let augmentedF = AugmentedFCircuit::<MNT6G1Projective, MNT6G1Var, TestFCircuit<Fr>> {
+            _c: PhantomData,
+            _gc: PhantomData,
+            poseidon_config: poseidon_config_Fr.clone(),
+            i: Some(i),
+            z_0: Some(z_0),
+            z_i: Some(z_i),
+            z_i1: Some(z_i1),
+            phi: Some(phi1),
+            phiBig: Some(phi2),
+            phiBigOut: Some(phi3.clone()),
+            cmT: Some(cmT.0),
+            r: Some(r),
+            F: test_F_circuit,
+            x,
+        };
+        augmentedF.generate_constraints(cs.clone()).unwrap();
+        println!("num_constraints={:?}", cs.num_constraints());
+
+        assert!(cs.is_satisfied().unwrap());
     }
 }
