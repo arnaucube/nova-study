@@ -8,6 +8,7 @@ use ark_r1cs_std::{
     fields::{fp::FpVar, nonnative::NonNativeFieldVar, FieldVar},
     groups::GroupOpsBounds,
     prelude::CurveVar,
+    R1CSVar,
     ToBitsGadget,
     ToBytesGadget,
     ToConstraintFieldGadget,
@@ -120,7 +121,6 @@ where
         phi3.cmW
             .enforce_equal(&(phi1.cmW + phi2.cmW.scalar_mul_le(r.to_bits_le()?.iter())?))?;
 
-        // wip x's check
         phi3.x.enforce_equal(&(phi1.x + r * phi2.x))?;
         Ok(())
     }
@@ -179,19 +179,22 @@ where
         let phiBigOut = PhiVar::<C, GC>::new_witness(cs.clone(), || Ok(self.phiBigOut.unwrap()))?;
 
         let cmT = GC::new_witness(cs.clone(), || Ok(self.cmT.unwrap()))?;
+
         let r =
             NonNativeFieldVar::<C::ScalarField, ConstraintF<C>>::new_witness(cs.clone(), || {
                 Ok(self.r.unwrap())
             })?; // r will come from transcript
 
-        // if i=0, output H(vk_nifs, 1, z_0, z_i1, phi)
-        let phiOut_x = AugmentedFCircuit::<C, GC, FC>::phi_x_hash_var(
+        let x = FpVar::<ConstraintF<C>>::new_input(cs.clone(), || Ok(self.x))?;
+
+        // if i=0, output (φ_{i+1}.x), phiOut.x = H(vk_nifs, 1, z_0, z_i1, phi)
+        let phiOut_x_first_iter = AugmentedFCircuit::<C, GC, FC>::phi_x_hash_var(
             cs.clone(),
             self.poseidon_config.clone(),
             FpVar::<ConstraintF<C>>::one(),
             z_0.clone(),
             z_i1.clone(),
-            phi.clone(),
+            phiBigOut.clone(),
         )?;
         // TODO WIP: x is the output when i=0
 
@@ -204,32 +207,37 @@ where
             z_i.clone(),
             phiBig.clone(),
         )?;
-        let x_CF = phi.x.to_constraint_field()?; // phi.x on the ConstraintF<C>
-                                                 // x_CF[0].enforce_equal(&h)?; // review
+        // check that h == phi.x.
+        // Note: phi.x is in ScalarField, while h is in ConstraintF (BaseField), that's why bytes
+        // are used in the comparison.
+        (phi.x.to_bytes()?).enforce_equal(&h.to_bytes()?)?; // TODO review
 
         // 2. phi.cmE==cm(0), phi.u==1
-        // (phi.cmE.is_zero()?).enforce_equal(&Boolean::TRUE)?; // TODO check that cmE = cm(0)
+        // (phi.cmE.is_zero()?).enforce_equal(&Boolean::TRUE)?; // TODO not cmE=0, but check that cmE = cm(0)
         (phi.u.is_one()?).enforce_equal(&Boolean::TRUE)?;
 
         // 3. nifs.verify, checks that folding phi & phiBig obtains phiBigOut
         NIFSGadget::<C, GC>::verify(r, cmT, phi, phiBig, phiBigOut.clone())?;
 
         // 4. zksnark.V(vk_snark, phi_new, proof_phi)
-        // 5. phi.x == H(i+1, z_0, z_i+1, phiBigOut)
-        let h = AugmentedFCircuit::<C, GC, FC>::phi_x_hash_var(
+        // 5. (φ_{i+1}.x) phiOut.x == H(i+1, z_0, z_i+1, phiBigOut)
+        let phiOut_x = AugmentedFCircuit::<C, GC, FC>::phi_x_hash_var(
             cs.clone(),
             self.poseidon_config.clone(),
             i + FpVar::<ConstraintF<C>>::one(),
             z_0.clone(),
             z_i1.clone(),
             phiBigOut.clone(),
-        )?;
-        // WIP
-        let x_CF = phiBigOut.x.to_constraint_field()?; // phi.x on the ConstraintF<C>
-                                                       // x_CF[0].enforce_equal(&h)?; // TODO review
+        )?; // WIP
+
+        // check that inputed 'x' is equal to phiOut_x_first_iter or phiOut_x depending if we're at
+        // i=0 or not.
+        // if i==0: check x==phiOut_x_first_iter
+        phiOut_x_first_iter.enforce_equal(&x)?;
+        // else: check x==phiOut_x
 
         // WIP assert that z_i1 == F(z_i).z_i1
-        // self.F.generate_constraints(cs.clone())?;
+        self.F.generate_constraints(cs.clone())?;
 
         Ok(())
     }
@@ -494,6 +502,7 @@ mod test {
 
         let cs = ConstraintSystem::<Fr>::new_ref();
 
+        // note: gen_test_values ws is the F (internal) circuit witness only
         let (r1cs, ws, _) = nifs::gen_test_values::<Fq>(2);
         let A = r1cs.A.clone();
 
@@ -504,7 +513,7 @@ mod test {
 
         let mut transcript_p = Transcript::<Fq, MNT6G1Projective>::new(&poseidon_config_Fq);
 
-        let (_fw3, phi1, phi2, _T, cmT) = nifs::NIFS::<MNT6G1Projective>::P(
+        let (_fw3, mut phi1, phi2, _T, cmT) = nifs::NIFS::<MNT6G1Projective>::P(
             &mut transcript_p,
             &pedersen_params,
             r,
@@ -512,14 +521,27 @@ mod test {
             fw1,
             fw2,
         );
-        let phi3 = nifs::NIFS::<MNT6G1Projective>::V(r, &phi1, &phi2, &cmT);
-        println!("phi1 {:?}", phi1.cmE);
+        // println!("phi1 {:?}", phi1.cmE);
 
-        let i = Fr::from(1_u32);
+        let i = Fr::from(0_u32);
         let z_0 = Fr::from(0_u32);
         let z_i = Fr::from(3_u32);
         let z_i1 = Fr::from(35_u32);
         let test_F_circuit = TestFCircuit::<Fr> { z_i, z_i1 };
+
+        // TODO maybe phi.x should be set from fw1 (few lines above)
+        let phi1_x: Fr =
+            AugmentedFCircuit::<MNT6G1Projective, MNT6G1Var, TestFCircuit<Fr>>::phi_x_hash(
+                poseidon_config_Fr.clone(),
+                i,
+                z_0.clone(),
+                z_i.clone(),
+                phi2.clone(), // phiBig
+            );
+        phi1.x = Fq::from_le_bytes_mod_order(&phi1_x.into_bigint().to_bytes_le());
+
+        // fold committed instance phi3
+        let phi3 = nifs::NIFS::<MNT6G1Projective>::V(r, &phi1, &phi2, &cmT);
 
         let x = AugmentedFCircuit::<MNT6G1Projective, MNT6G1Var, TestFCircuit<Fr>>::phi_x_hash(
             poseidon_config_Fr.clone(),

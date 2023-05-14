@@ -1,6 +1,6 @@
 use ark_crypto_primitives::sponge::Absorb;
 use ark_ec::{CurveGroup, Group};
-use ark_ff::{Field, PrimeField};
+use ark_ff::{BigInteger, Field, PrimeField};
 use std::marker::PhantomData;
 
 use ark_crypto_primitives::sponge::poseidon::{PoseidonConfig, PoseidonSponge};
