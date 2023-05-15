@@ -12,3 +12,6 @@ mod pedersen;
 mod sumcheck;
 mod transcript;
 mod utils;
+
+// hypernova related:
+mod hypernova;
