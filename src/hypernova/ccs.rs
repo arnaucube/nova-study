@@ -4,14 +4,14 @@ use crate::nifs::R1CS;
 use crate::utils::{hadamard_product, matrix_vector_product, vec_add, vector_elem_product};
 
 pub struct CCS<F: PrimeField> {
-    m: usize,
-    n: usize,
-    t: usize,
-    q: usize,
-    d: usize,
-    S: Vec<Vec<usize>>,
-    c: Vec<F>,
-    M: Vec<Vec<Vec<F>>>,
+    pub m: usize,
+    pub n: usize,
+    pub t: usize,
+    pub q: usize,
+    pub d: usize,
+    pub S: Vec<Vec<usize>>,
+    pub c: Vec<F>,
+    pub M: Vec<Vec<Vec<F>>>,
 }
 
 impl<F: PrimeField> R1CS<F> {

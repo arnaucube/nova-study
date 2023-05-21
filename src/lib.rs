@@ -5,13 +5,12 @@
 // #![allow(unused)] // TMP
 #![allow(dead_code)] // TMP
 
-mod circuits;
-mod ivc;
-mod nifs;
-mod pedersen;
-mod sumcheck;
-mod transcript;
-mod utils;
+pub mod circuits;
+pub mod ivc;
+pub mod nifs;
+pub mod pedersen;
+pub mod transcript;
+pub mod utils;
 
 // hypernova related:
-mod hypernova;
+pub mod hypernova;

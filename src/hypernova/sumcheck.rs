@@ -14,6 +14,59 @@ use ark_crypto_primitives::sponge::{poseidon::PoseidonConfig, Absorb};
 
 use crate::transcript::Transcript;
 
+pub struct Point<F: PrimeField> {
+    _f: PhantomData<F>,
+}
+impl<F: PrimeField> Point<F> {
+    pub fn point_normal(n_elems: usize, iter_num: usize) -> Vec<F> {
+        let p = Self::point(vec![], false, n_elems, iter_num);
+        let mut r = vec![F::zero(); n_elems];
+        for i in 0..n_elems {
+            r[i] = p[i].unwrap();
+        }
+        r
+    }
+    pub fn point_complete(challenges: Vec<F>, n_elems: usize, iter_num: usize) -> Vec<F> {
+        let p = Self::point(challenges, false, n_elems, iter_num);
+        let mut r = vec![F::zero(); n_elems];
+        for i in 0..n_elems {
+            r[i] = p[i].unwrap();
+        }
+        r
+    }
+    fn point(challenges: Vec<F>, none: bool, n_elems: usize, iter_num: usize) -> Vec<Option<F>> {
+        let mut n_vars = n_elems - challenges.len();
+        assert!(n_vars >= log2(iter_num + 1) as usize);
+
+        if none {
+            // WIP
+            if n_vars == 0 {
+                panic!("err"); // or return directly challenges vector
+            }
+            n_vars -= 1;
+        }
+        let none_pos = if none {
+            challenges.len() + 1
+        } else {
+            challenges.len()
+        };
+        let mut p: Vec<Option<F>> = vec![None; n_elems];
+        for i in 0..challenges.len() {
+            p[i] = Some(challenges[i]);
+        }
+        for i in 0..n_vars {
+            let k = F::from(iter_num as u64).into_bigint().to_bytes_le();
+            let bit = k[i / 8] & (1 << (i % 8));
+            if bit == 0 {
+                p[none_pos + i] = Some(F::zero());
+            } else {
+                p[none_pos + i] = Some(F::one());
+            }
+        }
+        p
+    }
+}
+
 pub struct SumCheck<
     F: PrimeField + Absorb,
     C: CurveGroup,
@@ -84,46 +137,6 @@ where
         UV::from_coefficients_vec(univ_coeffs)
     }
 
-    fn point_complete(challenges: Vec<F>, n_elems: usize, iter_num: usize) -> Vec<F> {
-        let p = Self::point(challenges, false, n_elems, iter_num);
-        let mut r = vec![F::zero(); n_elems];
-        for i in 0..n_elems {
-            r[i] = p[i].unwrap();
-        }
-        r
-    }
-    fn point(challenges: Vec<F>, none: bool, n_elems: usize, iter_num: usize) -> Vec<Option<F>> {
-        let mut n_vars = n_elems - challenges.len();
-        assert!(n_vars >= log2(iter_num + 1) as usize);
-
-        if none {
-            // WIP
-            if n_vars == 0 {
-                panic!("err"); // or return directly challenges vector
-            }
-            n_vars -= 1;
-        }
-        let none_pos = if none {
-            challenges.len() + 1
-        } else {
-            challenges.len()
-        };
-        let mut p: Vec<Option<F>> = vec![None; n_elems];
-        for i in 0..challenges.len() {
-            p[i] = Some(challenges[i]);
-        }
-        for i in 0..n_vars {
-            let k = F::from(iter_num as u64).into_bigint().to_bytes_le();
-            let bit = k[i / 8] & (1 << (i % 8));
-            if bit == 0 {
-                p[none_pos + i] = Some(F::zero());
-            } else {
-                p[none_pos + i] = Some(F::one());
-            }
-        }
-        p
-    }
-
     pub fn prove(poseidon_config: &PoseidonConfig<F>, g: MV) -> (F, Vec<UV>, F)
     where
         <MV as Polynomial<F>>::Point: From<Vec<F>>,
@@ -133,14 +146,14 @@ where
 
         let v = g.num_vars();
 
-        // compute H
-        let mut H = F::zero();
+        // compute T
+        let mut T = F::zero();
         for i in 0..(2_u64.pow(v as u32) as usize) {
-            let p = Self::point_complete(vec![], v, i);
+            let p = Point::<F>::point_complete(vec![], v, i);
 
-            H += g.evaluate(&p.into());
+            T += g.evaluate(&p.into());
         }
-        transcript.add(&H);
+        transcript.add(&T);
 
         let mut ss: Vec<UV> = Vec::new();
         let mut r: Vec<F> = vec![];
@@ -153,7 +166,7 @@ where
 
             let mut s_i = UV::zero();
             for j in 0..n_points {
-                let point = Self::point(r[..i].to_vec(), true, v, j);
+                let point = Point::<F>::point(r[..i].to_vec(), true, v, j);
                 s_i = s_i + Self::partial_evaluate(&g, &point);
             }
             transcript.add_vec(s_i.coeffs());
@@ -161,7 +174,8 @@ where
         }
 
         let last_g_eval = g.evaluate(&r.into());
-        (H, ss, last_g_eval)
+        // ss: intermediate univariate polynomials
+        (T, ss, last_g_eval)
     }
 
     pub fn verify(poseidon_config: &PoseidonConfig<F>, proof: (F, Vec<UV>, F)) -> bool {
@@ -218,45 +232,46 @@ mod tests {
         let f1 = Fr::from(1);
         let f0 = Fr::from(0);
         type SC = SumCheck<Fr, G1Projective, DensePolynomial<Fr>, SparsePolynomial<Fr, SparseTerm>>;
+        type P = Point<Fr>;
 
-        let p = SC::point(vec![Fr::from(4_u32)], true, 5, 0);
+        let p = P::point(vec![Fr::from(4_u32)], true, 5, 0);
         assert_eq!(vec![Some(f4), None, Some(f0), Some(f0), Some(f0),], p);
 
-        let p = SC::point(vec![Fr::from(4_u32)], true, 5, 1);
+        let p = P::point(vec![Fr::from(4_u32)], true, 5, 1);
         assert_eq!(vec![Some(f4), None, Some(f1), Some(f0), Some(f0),], p);
 
-        let p = SC::point(vec![Fr::from(4_u32)], true, 5, 2);
+        let p = P::point(vec![Fr::from(4_u32)], true, 5, 2);
         assert_eq!(vec![Some(f4), None, Some(f0), Some(f1), Some(f0),], p);
 
-        let p = SC::point(vec![Fr::from(4_u32)], true, 5, 3);
+        let p = P::point(vec![Fr::from(4_u32)], true, 5, 3);
         assert_eq!(vec![Some(f4), None, Some(f1), Some(f1), Some(f0),], p);
 
-        let p = SC::point(vec![Fr::from(4_u32)], true, 5, 4);
+        let p = P::point(vec![Fr::from(4_u32)], true, 5, 4);
         assert_eq!(vec![Some(f4), None, Some(f0), Some(f0), Some(f1),], p);
 
         // without None
-        let p = SC::point(vec![], false, 4, 0);
+        let p = P::point(vec![], false, 4, 0);
         assert_eq!(vec![Some(f0), Some(f0), Some(f0), Some(f0),], p);
 
-        let p = SC::point(vec![Fr::from(4_u32)], false, 5, 0);
+        let p = P::point(vec![Fr::from(4_u32)], false, 5, 0);
         assert_eq!(vec![Some(f4), Some(f0), Some(f0), Some(f0), Some(f0),], p);
 
-        let p = SC::point(vec![Fr::from(4_u32)], false, 5, 1);
+        let p = P::point(vec![Fr::from(4_u32)], false, 5, 1);
         assert_eq!(vec![Some(f4), Some(f1), Some(f0), Some(f0), Some(f0),], p);
 
-        let p = SC::point(vec![Fr::from(4_u32)], false, 5, 3);
+        let p = P::point(vec![Fr::from(4_u32)], false, 5, 3);
         assert_eq!(vec![Some(f4), Some(f1), Some(f1), Some(f0), Some(f0),], p);
 
-        let p = SC::point(vec![Fr::from(4_u32)], false, 5, 4);
+        let p = P::point(vec![Fr::from(4_u32)], false, 5, 4);
         assert_eq!(vec![Some(f4), Some(f0), Some(f0), Some(f1), Some(f0),], p);
 
-        let p = SC::point(vec![Fr::from(4_u32)], false, 5, 10);
+        let p = P::point(vec![Fr::from(4_u32)], false, 5, 10);
         assert_eq!(vec![Some(f4), Some(f0), Some(f1), Some(f0), Some(f1),], p);
 
-        let p = SC::point(vec![Fr::from(4_u32)], false, 5, 15);
+        let p = P::point(vec![Fr::from(4_u32)], false, 5, 15);
         assert_eq!(vec![Some(f4), Some(f1), Some(f1), Some(f1), Some(f1),], p);
 
-        // let p = SC::point(vec![Fr::from(4_u32)], false, 4, 16); // TODO expect error
+        // let p = P::point(vec![Fr::from(4_u32)], false, 4, 16); // TODO expect error
     }
 
     #[test]
