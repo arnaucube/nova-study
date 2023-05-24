@@ -2,4 +2,5 @@
 
 https://eprint.iacr.org/2023/573.pdf
 
-> Warning: Implementation just to learn the internals of HyperNova. Do not use.
+**Note**: this subdirectory work has stop for the moment, we're working on a HyperNova's multifolding implementation at https://github.com/privacy-scaling-explorations/multifolding-poc
+
